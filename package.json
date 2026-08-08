@@ -1,0 +1,24 @@
+{
+  "name": "quick-video-maker",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Create an MP4 video from one audio file and one still image.",
+  "type": "module",
+  "scripts": {
+    "start": "node scripts/prepare-ffmpeg.mjs && tauri dev",
+    "dev:web": "vite",
+    "build:web": "vite build",
+    "check": "tsc --noEmit && cargo check --manifest-path src-tauri/Cargo.toml",
+    "test": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "release:portable": "node scripts/release-portable.mjs"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.8.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.8.5",
+    "ffmpeg-static": "^5.2.0",
+    "typescript": "^5.9.2",
+    "vite": "^7.1.1"
+  }
+}

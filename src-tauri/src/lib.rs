@@ -1,0 +1,121 @@
+mod dialogs;
+mod portable;
+mod preview;
+mod state;
+mod video;
+
+use state::{AppState, ProcessControl};
+use std::sync::Arc;
+use std::{path::PathBuf, sync::Mutex};
+use tauri::Manager;
+
+#[tauri::command]
+async fn create_video(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    request: video::CreateVideoRequest,
+) -> Result<video::VideoResult, String> {
+    let paths = state.paths.clone();
+    let process = state.process.clone();
+    let preview = state.preview.clone();
+    let result =
+        tauri::async_runtime::spawn_blocking(move || video::generate(app, paths, process, request))
+            .await
+            .map_err(|error| format!("動画作成タスクが停止しました: {error}"))??;
+    set_preview(&preview, &result.output_path)?;
+    Ok(result)
+}
+
+#[tauri::command]
+async fn import_video(
+    state: tauri::State<'_, AppState>,
+    video_path: String,
+) -> Result<video::VideoResult, String> {
+    let paths = state.paths.clone();
+    let preview = state.preview.clone();
+    let result =
+        tauri::async_runtime::spawn_blocking(move || video::inspect_video(&paths, &video_path))
+            .await
+            .map_err(|error| format!("動画情報の取得タスクが停止しました: {error}"))??;
+    set_preview(&preview, &result.output_path)?;
+    Ok(result)
+}
+
+#[tauri::command]
+async fn trim_video(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    request: video::TrimVideoRequest,
+) -> Result<video::VideoResult, String> {
+    let input = state
+        .preview
+        .lock()
+        .map_err(|_| "プレビュー動画の状態を取得できません".to_string())?
+        .clone()
+        .ok_or_else(|| "先に動画を作成またはインポートしてください。".to_string())?;
+    let paths = state.paths.clone();
+    let process = state.process.clone();
+    let preview = state.preview.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        video::trim(app, paths, process, input, request)
+    })
+    .await
+    .map_err(|error| format!("動画カットタスクが停止しました: {error}"))??;
+    set_preview(&preview, &result.output_path)?;
+    Ok(result)
+}
+
+fn set_preview(preview: &preview::PreviewStore, path: &str) -> Result<(), String> {
+    let mut value = preview
+        .lock()
+        .map_err(|_| "プレビュー動画を設定できません".to_string())?;
+    *value = Some(PathBuf::from(path));
+    Ok(())
+}
+
+pub fn run() -> Result<(), Box<dyn std::error::Error>> {
+    let paths = portable::PortablePaths::initialize().map_err(std::io::Error::other)?;
+    let process = Arc::new(ProcessControl::default());
+    let preview = Arc::new(Mutex::new(None));
+    let preview_for_protocol = preview.clone();
+
+    let app = tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _, _| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
+        .register_uri_scheme_protocol("qvm", move |_context, request| {
+            preview::response(&request, &preview_for_protocol)
+        })
+        .manage(AppState {
+            paths: paths.clone(),
+            process: process.clone(),
+            preview,
+        })
+        .invoke_handler(tauri::generate_handler![
+            dialogs::select_music_file,
+            dialogs::select_image_file,
+            dialogs::select_video_file,
+            dialogs::select_output_file,
+            create_video,
+            import_video,
+            trim_video
+        ])
+        .build(tauri::generate_context!())?;
+
+    app.run(move |_handle, event| {
+        if matches!(
+            event,
+            tauri::RunEvent::Exit | tauri::RunEvent::ExitRequested { .. }
+        ) {
+            video::stop_active_process(&process);
+            let _ = paths.clean_temp();
+            paths.log("application shutdown");
+        }
+    });
+
+    Ok(())
+}

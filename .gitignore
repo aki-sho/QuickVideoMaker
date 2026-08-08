@@ -1,0 +1,21 @@
+# Dependencies and frontend output
+node_modules/
+dist-web/
+
+# Rust and release output
+src-tauri/target/
+dist/
+.release-staging/
+
+# Portable runtime data
+QuickVideoMaker-PortableData/
+**/QuickVideoMaker-PortableData/
+
+# Local tools and editors
+.idea/
+.vscode/
+*.swp
+*.tmp
+*.log
+Thumbs.db
+.DS_Store

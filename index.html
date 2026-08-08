@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light" />
+    <title>QuickVideoMaker</title>
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="hero">
+        <div class="brand-mark" aria-hidden="true">
+          <span class="brand-play"></span>
+        </div>
+        <div>
+          <h1>QuickVideoMaker</h1>
+          <p>音楽と1枚の画像から、シンプルなMP4動画を作成します。</p>
+        </div>
+      </header>
+
+      <section class="card" aria-labelledby="files-heading">
+        <h2 id="files-heading">素材と保存先</h2>
+        <div class="file-row">
+          <div class="file-copy">
+            <label for="musicPath">音楽ファイル</label>
+            <input id="musicPath" type="text" readonly placeholder="MP3、WAVなどを選択" />
+          </div>
+          <button id="selectMusic" class="secondary" type="button">音楽選択</button>
+        </div>
+
+        <div class="file-row">
+          <div class="file-copy">
+            <label for="imagePath">画像ファイル</label>
+            <input id="imagePath" type="text" readonly placeholder="JPG、PNGなどを選択" />
+          </div>
+          <button id="selectImage" class="secondary" type="button">画像選択</button>
+        </div>
+
+        <div class="file-row">
+          <div class="file-copy">
+            <label for="outputPath">保存先</label>
+            <input id="outputPath" type="text" readonly placeholder="MP4の保存先を選択" />
+          </div>
+          <button id="selectOutput" class="secondary" type="button">保存先選択</button>
+        </div>
+
+        <div class="import-divider"><span>または</span></div>
+        <div class="import-video-row">
+          <div>
+            <strong>既存動画をカット</strong>
+            <p>作成済みの動画を読み込み、プレビューしながら長さを調整できます。</p>
+          </div>
+          <button id="selectVideo" class="secondary import-button" type="button">動画をインポート</button>
+        </div>
+      </section>
+
+      <section class="card status-card" aria-live="polite">
+        <div class="status-heading">
+          <h2>作成状況</h2>
+          <span id="progressText">0%</span>
+        </div>
+        <div class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+          <div id="progressBar" class="progress-bar"></div>
+        </div>
+        <p id="statusMessage" class="status-message">ファイルを選択してください。</p>
+      </section>
+
+      <button id="createVideo" class="primary" type="button" disabled>
+        <span class="button-icon" aria-hidden="true">▶</span>
+        動画作成
+      </button>
+
+      <section id="previewSection" class="card preview-card" aria-labelledby="preview-heading" hidden>
+        <div class="preview-heading">
+          <div>
+            <h2 id="preview-heading">動画プレビュー</h2>
+            <p id="previewFileName">作成した動画</p>
+          </div>
+          <span id="videoDuration" class="duration-badge">00:00</span>
+        </div>
+        <video id="videoPreview" controls preload="metadata" playsinline></video>
+
+        <div class="trim-panel">
+          <div class="trim-title">
+            <div>
+              <h3>長さをカット</h3>
+              <p>残したい範囲の開始・終了時間を秒で指定します。</p>
+            </div>
+          </div>
+          <div class="trim-inputs">
+            <div class="time-field">
+              <label for="trimStart">開始（秒）</label>
+              <input id="trimStart" type="number" min="0" step="0.1" value="0" />
+              <button id="setTrimStart" class="text-button" type="button">現在位置を設定</button>
+            </div>
+            <div class="time-field">
+              <label for="trimEnd">終了（秒）</label>
+              <input id="trimEnd" type="number" min="0.1" step="0.1" value="0" />
+              <button id="setTrimEnd" class="text-button" type="button">現在位置を設定</button>
+            </div>
+          </div>
+          <div class="trim-summary">
+            <span>カット後の長さ</span>
+            <strong id="trimmedDuration">0.0秒</strong>
+          </div>
+          <button id="trimAndSave" class="primary trim-action" type="button">
+            <span class="download-icon" aria-hidden="true">↓</span>
+            カットしてダウンロード
+          </button>
+        </div>
+      </section>
+
+      <footer><span id="appVersion">QuickVideoMaker</span></footer>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
