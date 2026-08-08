@@ -12,7 +12,7 @@ use std::{
         Arc, Mutex,
     },
     thread,
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Emitter};
 
@@ -34,6 +34,15 @@ pub struct TrimVideoRequest {
     content_mode: ContentMode,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewVideoRequest {
+    start_seconds: f64,
+    end_seconds: f64,
+    aspect_ratio: OutputAspectRatio,
+    content_mode: ContentMode,
+}
+
 #[derive(Clone, Copy, Deserialize)]
 pub enum OutputAspectRatio {
     #[serde(rename = "16:9")]
@@ -47,6 +56,13 @@ impl OutputAspectRatio {
         match self {
             Self::Landscape => (1920, 1080),
             Self::Portrait => (1080, 1920),
+        }
+    }
+
+    fn preview_dimensions(self) -> (u32, u32) {
+        match self {
+            Self::Landscape => (640, 360),
+            Self::Portrait => (360, 640),
         }
     }
 
@@ -351,6 +367,136 @@ pub fn trim(
     trim_with_progress(paths, process, input_path, request, progress)
 }
 
+pub fn render_preview(
+    app: AppHandle,
+    paths: PortablePaths,
+    process: Arc<ProcessControl>,
+    input_path: PathBuf,
+    request: PreviewVideoRequest,
+) -> Result<VideoResult, String> {
+    let progress: Arc<dyn Fn(u8, &str) + Send + Sync> = Arc::new(move |percent, message| {
+        emit_progress(&app, percent, message);
+    });
+    render_preview_with_progress(paths, process, input_path, request, progress)
+}
+
+fn render_preview_with_progress(
+    paths: PortablePaths,
+    process: Arc<ProcessControl>,
+    input_path: PathBuf,
+    request: PreviewVideoRequest,
+    progress: Arc<dyn Fn(u8, &str) + Send + Sync>,
+) -> Result<VideoResult, String> {
+    if process
+        .busy
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Err("別の動画処理を実行中です。".to_string());
+    }
+    let _busy_guard = BusyGuard(process.clone());
+    if process.shutting_down.load(Ordering::SeqCst) {
+        return Err("アプリを終了しています。".to_string());
+    }
+
+    let input = validate_input(&input_path.to_string_lossy(), "動画")?;
+    let source = inspect_video(&paths, &input.to_string_lossy())?;
+    validate_trim_range(
+        request.start_seconds,
+        request.end_seconds,
+        source.duration_seconds,
+    )?;
+
+    let preview_duration = (request.end_seconds - request.start_seconds).min(10.0);
+    let (output_width, output_height) = request.aspect_ratio.preview_dimensions();
+    let video_filter = request
+        .content_mode
+        .video_filter(output_width, output_height);
+    let preview_dir = paths.cache.join("previews");
+    fs::create_dir_all(&preview_dir)
+        .map_err(|error| format!("プレビューキャッシュを作成できません: {error}"))?;
+    let unique_id = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let preview_output = preview_dir.join(format!(
+        "conversion-preview-{}-{unique_id}.mp4",
+        std::process::id()
+    ));
+    let ffmpeg = paths.ffmpeg_path()?;
+
+    paths.log(&format!(
+        "video preview started: {:.3}-{:.3} ({}, {})",
+        request.start_seconds,
+        request.start_seconds + preview_duration,
+        request.aspect_ratio.label(),
+        request.content_mode.label()
+    ));
+    progress(2, "保存前プレビューを準備しました。");
+
+    let mut command = Command::new(ffmpeg);
+    command
+        .arg("-hide_banner")
+        .arg("-y")
+        .arg("-ss")
+        .arg(format!("{:.3}", request.start_seconds))
+        .arg("-i")
+        .arg(&input)
+        .arg("-t")
+        .arg(format!("{preview_duration:.3}"))
+        .arg("-map")
+        .arg("0:v:0")
+        .arg("-map")
+        .arg("0:a:0?")
+        .arg("-vf")
+        .arg(video_filter)
+        .arg("-c:v")
+        .arg("libx264")
+        .arg("-preset")
+        .arg("ultrafast")
+        .arg("-crf")
+        .arg("28")
+        .arg("-c:a")
+        .arg("aac")
+        .arg("-b:a")
+        .arg("96k")
+        .arg("-map_metadata")
+        .arg("-1")
+        .arg("-metadata:s:v:0")
+        .arg("rotate=0")
+        .arg("-movflags")
+        .arg("+faststart")
+        .arg("-progress")
+        .arg("pipe:1")
+        .arg("-nostats")
+        .arg(&preview_output)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .stdin(Stdio::null())
+        .env("TEMP", &paths.temp)
+        .env("TMP", &paths.temp);
+    hide_console_window(&mut command);
+
+    if let Err(error) = run_trim_process(
+        progress.clone(),
+        &process,
+        command,
+        preview_duration,
+        "変換プレビューを作成しています…",
+    ) {
+        let _ = fs::remove_file(&preview_output);
+        paths.log(&format!("video preview failed: {error}"));
+        return Err(error);
+    }
+
+    progress(100, "保存前プレビューを作成しました。");
+    paths.log(&format!(
+        "video preview completed: {}",
+        preview_output.display()
+    ));
+    inspect_video(&paths, &preview_output.to_string_lossy())
+}
+
 fn trim_with_progress(
     paths: PortablePaths,
     process: Arc<ProcessControl>,
@@ -372,17 +518,11 @@ fn trim_with_progress(
 
     let input = validate_input(&input_path.to_string_lossy(), "動画")?;
     let source = inspect_video(&paths, &input.to_string_lossy())?;
-    if !request.start_seconds.is_finite()
-        || !request.end_seconds.is_finite()
-        || request.start_seconds < 0.0
-        || request.end_seconds <= request.start_seconds
-        || request.end_seconds > source.duration_seconds + 0.05
-    {
-        return Err(format!(
-            "カット範囲は0秒から{:.1}秒の間で指定してください。",
-            source.duration_seconds
-        ));
-    }
+    validate_trim_range(
+        request.start_seconds,
+        request.end_seconds,
+        source.duration_seconds,
+    )?;
 
     let output = validate_trim_output(&request.output_path, &input)?;
     let ffmpeg = paths.ffmpeg_path()?;
@@ -444,7 +584,13 @@ fn trim_with_progress(
         .env("TMP", &paths.temp);
     hide_console_window(&mut command);
 
-    let result = run_trim_process(progress.clone(), &process, command, trim_duration);
+    let result = run_trim_process(
+        progress.clone(),
+        &process,
+        command,
+        trim_duration,
+        "指定範囲をエンコードしています…",
+    );
     if let Err(error) = result {
         let _ = fs::remove_dir_all(&session);
         paths.log(&format!("video trim failed: {error}"));
@@ -469,6 +615,7 @@ fn run_trim_process(
     process: &Arc<ProcessControl>,
     mut command: Command,
     total_seconds: f64,
+    progress_message: &'static str,
 ) -> Result<(), String> {
     let mut child = command
         .spawn()
@@ -511,7 +658,7 @@ fn run_trim_process(
                 let percent = (5.0 + elapsed_seconds / total_seconds * 90.0).min(95.0) as u8;
                 if percent > last_percent {
                     last_percent = percent;
-                    progress_for_stdout(percent, "指定範囲をエンコードしています…");
+                    progress_for_stdout(percent, progress_message);
                 }
             }
         }
@@ -552,6 +699,20 @@ fn run_trim_process(
         "FFmpegがカット処理中にエラーを返しました。\n{}",
         compact_error(&details)
     ))
+}
+
+fn validate_trim_range(start_seconds: f64, end_seconds: f64, duration: f64) -> Result<(), String> {
+    if !start_seconds.is_finite()
+        || !end_seconds.is_finite()
+        || start_seconds < 0.0
+        || end_seconds <= start_seconds
+        || end_seconds > duration + 0.05
+    {
+        return Err(format!(
+            "カット範囲は0秒から{duration:.1}秒の間で指定してください。"
+        ));
+    }
+    Ok(())
 }
 
 fn validate_input(value: &str, label: &str) -> Result<PathBuf, String> {
@@ -695,10 +856,11 @@ pub fn stop_active_process(process: &ProcessControl) {
 mod tests {
     use super::{
         compact_error, inspect_video, parse_duration_seconds, parse_video_dimensions,
-        trim_with_progress, ContentMode, OutputAspectRatio, TrimVideoRequest,
+        render_preview_with_progress, trim_with_progress, ContentMode, OutputAspectRatio,
+        PreviewVideoRequest, TrimVideoRequest,
     };
     use crate::{portable::PortablePaths, state::ProcessControl};
-    use std::{fs, process::Command, sync::Arc};
+    use std::{fs, path::PathBuf, process::Command, sync::Arc};
 
     #[test]
     fn chooses_a_useful_ffmpeg_error() {
@@ -722,6 +884,7 @@ mod tests {
         assert_eq!(parse_video_dimensions(rotated), Some((1080, 1920)));
         assert_eq!(OutputAspectRatio::Landscape.dimensions(), (1920, 1080));
         assert_eq!(OutputAspectRatio::Portrait.dimensions(), (1080, 1920));
+        assert_eq!(OutputAspectRatio::Portrait.preview_dimensions(), (360, 640));
         assert!(ContentMode::Contain
             .video_filter(1080, 1920)
             .contains("force_original_aspect_ratio=decrease,pad=1080:1920"));
@@ -771,6 +934,23 @@ mod tests {
         assert!((2.9..=3.1).contains(&imported.duration_seconds));
         assert_eq!((imported.width, imported.height), (320, 240));
 
+        let preview = render_preview_with_progress(
+            paths.clone(),
+            Arc::new(ProcessControl::default()),
+            source.clone(),
+            PreviewVideoRequest {
+                start_seconds: 0.25,
+                end_seconds: 3.0,
+                aspect_ratio: OutputAspectRatio::Portrait,
+                content_mode: ContentMode::Cover,
+            },
+            Arc::new(|_, _| {}),
+        )
+        .expect("render preview");
+        assert!((2.6..=2.9).contains(&preview.duration_seconds));
+        assert_eq!((preview.width, preview.height), (360, 640));
+        assert!(PathBuf::from(&preview.output_path).is_file());
+
         let result = trim_with_progress(
             paths.clone(),
             Arc::new(ProcessControl::default()),
@@ -789,5 +969,6 @@ mod tests {
         assert_eq!((result.width, result.height), (1080, 1920));
         assert!(trimmed.is_file());
         let _ = fs::remove_dir_all(&test_dir);
+        paths.clean_preview_cache().expect("clean preview cache");
     }
 }

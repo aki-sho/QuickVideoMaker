@@ -52,6 +52,7 @@ impl PortablePaths {
         }
 
         paths.clean_temp()?;
+        paths.clean_preview_cache()?;
         paths.ensure_settings_file()?;
         paths.configure_environment();
         let ffmpeg = paths.ffmpeg_path()?;
@@ -128,6 +129,20 @@ impl PortablePaths {
         }
         fs::create_dir_all(&self.temp)
             .map_err(|error| format!("一時フォルダーを再作成できません: {error}"))
+    }
+
+    pub fn clean_preview_cache(&self) -> Result<(), String> {
+        let preview_cache = self.cache.join("previews");
+        if preview_cache.exists() {
+            fs::remove_dir_all(&preview_cache).map_err(|error| {
+                format!(
+                    "プレビューキャッシュを削除できません（{}）: {error}",
+                    preview_cache.display()
+                )
+            })?;
+        }
+        fs::create_dir_all(&preview_cache)
+            .map_err(|error| format!("プレビューキャッシュを作成できません: {error}"))
     }
 
     pub fn log(&self, message: &str) {

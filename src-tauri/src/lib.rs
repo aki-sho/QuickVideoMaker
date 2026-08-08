@@ -18,11 +18,12 @@ async fn create_video(
     let paths = state.paths.clone();
     let process = state.process.clone();
     let preview = state.preview.clone();
+    let source_video = state.source_video.clone();
     let result =
         tauri::async_runtime::spawn_blocking(move || video::generate(app, paths, process, request))
             .await
             .map_err(|error| format!("動画作成タスクが停止しました: {error}"))??;
-    set_preview(&preview, &result.output_path)?;
+    set_source_and_preview(&source_video, &preview, &result.output_path)?;
     Ok(result)
 }
 
@@ -33,11 +34,12 @@ async fn import_video(
 ) -> Result<video::VideoResult, String> {
     let paths = state.paths.clone();
     let preview = state.preview.clone();
+    let source_video = state.source_video.clone();
     let result =
         tauri::async_runtime::spawn_blocking(move || video::inspect_video(&paths, &video_path))
             .await
             .map_err(|error| format!("動画情報の取得タスクが停止しました: {error}"))??;
-    set_preview(&preview, &result.output_path)?;
+    set_source_and_preview(&source_video, &preview, &result.output_path)?;
     Ok(result)
 }
 
@@ -48,7 +50,7 @@ async fn trim_video(
     request: video::TrimVideoRequest,
 ) -> Result<video::VideoResult, String> {
     let input = state
-        .preview
+        .source_video
         .lock()
         .map_err(|_| "プレビュー動画の状態を取得できません".to_string())?
         .clone()
@@ -56,11 +58,36 @@ async fn trim_video(
     let paths = state.paths.clone();
     let process = state.process.clone();
     let preview = state.preview.clone();
+    let source_video = state.source_video.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         video::trim(app, paths, process, input, request)
     })
     .await
     .map_err(|error| format!("動画カットタスクが停止しました: {error}"))??;
+    set_source_and_preview(&source_video, &preview, &result.output_path)?;
+    Ok(result)
+}
+
+#[tauri::command]
+async fn render_video_preview(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    request: video::PreviewVideoRequest,
+) -> Result<video::VideoResult, String> {
+    let input = state
+        .source_video
+        .lock()
+        .map_err(|_| "元動画の状態を取得できません".to_string())?
+        .clone()
+        .ok_or_else(|| "先に動画を作成またはインポートしてください。".to_string())?;
+    let paths = state.paths.clone();
+    let process = state.process.clone();
+    let preview = state.preview.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        video::render_preview(app, paths, process, input, request)
+    })
+    .await
+    .map_err(|error| format!("変換プレビュータスクが停止しました: {error}"))??;
     set_preview(&preview, &result.output_path)?;
     Ok(result)
 }
@@ -73,9 +100,19 @@ fn set_preview(preview: &preview::PreviewStore, path: &str) -> Result<(), String
     Ok(())
 }
 
+fn set_source_and_preview(
+    source_video: &preview::PreviewStore,
+    preview: &preview::PreviewStore,
+    path: &str,
+) -> Result<(), String> {
+    set_preview(source_video, path)?;
+    set_preview(preview, path)
+}
+
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let paths = portable::PortablePaths::initialize().map_err(std::io::Error::other)?;
     let process = Arc::new(ProcessControl::default());
+    let source_video = Arc::new(Mutex::new(None));
     let preview = Arc::new(Mutex::new(None));
     let preview_for_protocol = preview.clone();
 
@@ -93,6 +130,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         .manage(AppState {
             paths: paths.clone(),
             process: process.clone(),
+            source_video,
             preview,
         })
         .invoke_handler(tauri::generate_handler![
@@ -102,7 +140,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             dialogs::select_output_file,
             create_video,
             import_video,
-            trim_video
+            trim_video,
+            render_video_preview
         ])
         .build(tauri::generate_context!())?;
 
@@ -113,6 +152,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         ) {
             video::stop_active_process(&process);
             let _ = paths.clean_temp();
+            let _ = paths.clean_preview_cache();
             paths.log("application shutdown");
         }
     });

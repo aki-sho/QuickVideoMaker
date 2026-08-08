@@ -27,6 +27,8 @@ type ContentMode = "contain" | "cover";
 const paths: Paths = { music: "", image: "", output: "" };
 let isProcessing = false;
 let currentVideo: VideoResult | null = null;
+let isShowingTransformPreview = false;
+let displayedPreviewOffset = 0;
 
 const musicInput = document.querySelector<HTMLInputElement>("#musicPath")!;
 const imageInput = document.querySelector<HTMLInputElement>("#imagePath")!;
@@ -45,6 +47,7 @@ const trimStart = document.querySelector<HTMLInputElement>("#trimStart")!;
 const trimEnd = document.querySelector<HTMLInputElement>("#trimEnd")!;
 const trimmedDuration = document.querySelector<HTMLElement>("#trimmedDuration")!;
 const trimButton = document.querySelector<HTMLButtonElement>("#trimAndSave")!;
+const previewTransformButton = document.querySelector<HTMLButtonElement>("#previewTransform")!;
 
 function setProgress(percent: number, message: string, kind: "normal" | "success" | "error" = "normal") {
   const bounded = Math.max(0, Math.min(100, Math.round(percent)));
@@ -61,6 +64,7 @@ function syncForm() {
   outputInput.value = paths.output;
   createButton.disabled = isProcessing || !paths.music || !paths.image || !paths.output;
   trimButton.disabled = isProcessing || !currentVideo || !isTrimRangeValid();
+  previewTransformButton.disabled = isProcessing || !currentVideo || !isTrimRangeValid();
 
   for (const button of document.querySelectorAll<HTMLButtonElement>("button.secondary, button.text-button")) {
     button.disabled = isProcessing;
@@ -94,7 +98,14 @@ function updateTrimSummary() {
   const end = Number(trimEnd.value);
   const duration = Number.isFinite(start) && Number.isFinite(end) ? Math.max(0, end - start) : 0;
   trimmedDuration.textContent = `${duration.toFixed(1)}秒`;
+  markTransformPreviewOutdated();
   syncForm();
+}
+
+function markTransformPreviewOutdated() {
+  if (isShowingTransformPreview) {
+    previewFileName.textContent = "変換プレビュー（設定が変更されました）";
+  }
 }
 
 function suggestedCutName(path: string) {
@@ -128,6 +139,8 @@ function selectedContentMode(): ContentMode {
 
 function showPreview(result: VideoResult) {
   currentVideo = result;
+  isShowingTransformPreview = false;
+  displayedPreviewOffset = 0;
   previewSection.hidden = false;
   previewFileName.textContent = result.outputPath;
   videoDuration.textContent = formatTime(result.durationSeconds);
@@ -143,6 +156,16 @@ function showPreview(result: VideoResult) {
   previewVideo.load();
   updateTrimSummary();
   previewSection.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function showTransformPreview(result: VideoResult) {
+  isShowingTransformPreview = true;
+  displayedPreviewOffset = Number(trimStart.value);
+  previewFileName.textContent = "変換プレビュー（未保存・最大10秒）";
+  videoDuration.textContent = formatTime(result.durationSeconds);
+  previewVideo.src = `${convertFileSrc("preview", "qvm")}?v=${Date.now()}`;
+  previewVideo.load();
+  previewVideo.addEventListener("canplay", () => void previewVideo.play(), { once: true });
 }
 
 async function choose(kind: "music" | "image" | "output") {
@@ -213,31 +236,60 @@ createButton.addEventListener("click", async () => {
 
 trimStart.addEventListener("input", updateTrimSummary);
 trimEnd.addEventListener("input", updateTrimSummary);
+for (const input of document.querySelectorAll<HTMLInputElement>('input[name="outputAspect"], input[name="contentMode"]')) {
+  input.addEventListener("change", markTransformPreviewOutdated);
+}
 
 document.querySelector("#setTrimStart")!.addEventListener("click", () => {
-  trimStart.value = Math.min(previewVideo.currentTime, Number(trimEnd.value) - 0.1).toFixed(1);
+  const sourceTime = displayedPreviewOffset + previewVideo.currentTime;
+  trimStart.value = Math.min(sourceTime, Number(trimEnd.value) - 0.1).toFixed(1);
   updateTrimSummary();
 });
 
 document.querySelector("#setTrimEnd")!.addEventListener("click", () => {
   const duration = currentVideo?.durationSeconds ?? previewVideo.duration;
-  trimEnd.value = Math.max(previewVideo.currentTime, Number(trimStart.value) + 0.1).toFixed(1);
+  const sourceTime = displayedPreviewOffset + previewVideo.currentTime;
+  trimEnd.value = Math.max(sourceTime, Number(trimStart.value) + 0.1).toFixed(1);
   if (Number(trimEnd.value) > duration) trimEnd.value = duration.toFixed(1);
   updateTrimSummary();
 });
 
 previewVideo.addEventListener("loadedmetadata", () => {
-  if (!currentVideo || !Number.isFinite(previewVideo.duration)) return;
-  currentVideo.durationSeconds = previewVideo.duration;
-  videoDuration.textContent = formatTime(previewVideo.duration);
-  trimStart.max = previewVideo.duration.toFixed(3);
-  trimEnd.max = previewVideo.duration.toFixed(3);
-  if (Number(trimEnd.value) > previewVideo.duration) trimEnd.value = previewVideo.duration.toFixed(1);
-  updateTrimSummary();
+  syncForm();
 });
 
 previewVideo.addEventListener("error", () => {
   setProgress(100, "動画は作成されましたが、プレビューを読み込めませんでした。", "error");
+});
+
+previewTransformButton.addEventListener("click", async () => {
+  if (!currentVideo || !isTrimRangeValid()) {
+    setProgress(0, "開始時間と終了時間を確認してください。", "error");
+    return;
+  }
+
+  isProcessing = true;
+  syncForm();
+  setProgress(1, "保存前プレビューを作成しています…");
+  previewVideo.pause();
+
+  try {
+    const result = await invoke<VideoResult>("render_video_preview", {
+      request: {
+        startSeconds: Number(trimStart.value),
+        endSeconds: Number(trimEnd.value),
+        aspectRatio: selectedAspectRatio(),
+        contentMode: selectedContentMode(),
+      },
+    });
+    showTransformPreview(result);
+    setProgress(100, "保存前プレビューを作成しました。内容を確認してからダウンロードできます。", "success");
+  } catch (error) {
+    setProgress(0, `プレビューを作成できませんでした: ${String(error)}`, "error");
+  } finally {
+    isProcessing = false;
+    syncForm();
+  }
 });
 
 trimButton.addEventListener("click", async () => {

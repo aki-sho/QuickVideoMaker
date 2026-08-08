@@ -134,10 +134,17 @@
             <span>カット後の長さ</span>
             <strong id="trimmedDuration">0.0秒</strong>
           </div>
-          <button id="trimAndSave" class="primary trim-action" type="button">
-            <span class="download-icon" aria-hidden="true">↓</span>
-            カット・比率変換してダウンロード
-          </button>
+          <div class="transform-actions">
+            <button id="previewTransform" class="preview-action" type="button">
+              <span aria-hidden="true">▶</span>
+              設定をプレビュー
+            </button>
+            <button id="trimAndSave" class="primary trim-action" type="button">
+              <span class="download-icon" aria-hidden="true">↓</span>
+              ダウンロード
+            </button>
+          </div>
+          <p class="preview-note">開始位置から最大10秒を高速変換します。確認用なので保存先の選択は不要です。</p>
         </div>
       </section>
 

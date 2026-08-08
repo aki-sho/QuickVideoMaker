@@ -25,5 +25,6 @@ impl Default for ProcessControl {
 pub struct AppState {
     pub paths: PortablePaths,
     pub process: Arc<ProcessControl>,
+    pub source_video: Arc<Mutex<Option<PathBuf>>>,
     pub preview: Arc<Mutex<Option<PathBuf>>>,
 }
