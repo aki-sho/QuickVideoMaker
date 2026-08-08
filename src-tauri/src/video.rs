@@ -31,6 +31,7 @@ pub struct TrimVideoRequest {
     start_seconds: f64,
     end_seconds: f64,
     aspect_ratio: OutputAspectRatio,
+    content_mode: ContentMode,
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -53,6 +54,33 @@ impl OutputAspectRatio {
         match self {
             Self::Landscape => "16:9",
             Self::Portrait => "9:16",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ContentMode {
+    Contain,
+    Cover,
+}
+
+impl ContentMode {
+    fn video_filter(self, width: u32, height: u32) -> String {
+        match self {
+            Self::Contain => format!(
+                "scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p"
+            ),
+            Self::Cover => format!(
+                "scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1,format=yuv420p"
+            ),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Contain => "contain",
+            Self::Cover => "cover",
         }
     }
 }
@@ -362,15 +390,16 @@ fn trim_with_progress(
     let temporary_output = session.join("trimmed-output.mp4");
     let trim_duration = request.end_seconds - request.start_seconds;
     let (output_width, output_height) = request.aspect_ratio.dimensions();
-    let video_filter = format!(
-        "scale={output_width}:{output_height}:force_original_aspect_ratio=decrease,pad={output_width}:{output_height}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p"
-    );
+    let video_filter = request
+        .content_mode
+        .video_filter(output_width, output_height);
     paths.log(&format!(
-        "video trim started: {} ({:.3}-{:.3}, {})",
+        "video trim started: {} ({:.3}-{:.3}, {}, {})",
         output.display(),
         request.start_seconds,
         request.end_seconds,
-        request.aspect_ratio.label()
+        request.aspect_ratio.label(),
+        request.content_mode.label()
     ));
     progress(2, "カット範囲を準備しました。");
 
@@ -666,7 +695,7 @@ pub fn stop_active_process(process: &ProcessControl) {
 mod tests {
     use super::{
         compact_error, inspect_video, parse_duration_seconds, parse_video_dimensions,
-        trim_with_progress, OutputAspectRatio, TrimVideoRequest,
+        trim_with_progress, ContentMode, OutputAspectRatio, TrimVideoRequest,
     };
     use crate::{portable::PortablePaths, state::ProcessControl};
     use std::{fs, process::Command, sync::Arc};
@@ -693,6 +722,12 @@ mod tests {
         assert_eq!(parse_video_dimensions(rotated), Some((1080, 1920)));
         assert_eq!(OutputAspectRatio::Landscape.dimensions(), (1920, 1080));
         assert_eq!(OutputAspectRatio::Portrait.dimensions(), (1080, 1920));
+        assert!(ContentMode::Contain
+            .video_filter(1080, 1920)
+            .contains("force_original_aspect_ratio=decrease,pad=1080:1920"));
+        assert!(ContentMode::Cover
+            .video_filter(1080, 1920)
+            .contains("force_original_aspect_ratio=increase,crop=1080:1920"));
     }
 
     #[test]
@@ -745,6 +780,7 @@ mod tests {
                 start_seconds: 0.5,
                 end_seconds: 1.7,
                 aspect_ratio: OutputAspectRatio::Portrait,
+                content_mode: ContentMode::Cover,
             },
             Arc::new(|_, _| {}),
         )

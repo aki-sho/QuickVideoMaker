@@ -104,7 +104,20 @@
               <span><strong>9:16</strong><small>縦型・1080 × 1920</small></span>
             </label>
           </fieldset>
-          <p class="ratio-note">映像を歪めず全体を収め、足りない部分には黒い余白を追加します。</p>
+          <fieldset class="content-selector">
+            <legend>中身の画像表示</legend>
+            <label class="content-option">
+              <input type="radio" name="contentMode" value="contain" checked />
+              <span class="content-preview contain-preview" aria-hidden="true"><i></i></span>
+              <span><strong>全体を表示</strong><small>画像全体を残し、余白を追加</small></span>
+            </label>
+            <label class="content-option">
+              <input type="radio" name="contentMode" value="cover" />
+              <span class="content-preview cover-preview" aria-hidden="true"><i></i></span>
+              <span><strong>枠いっぱい</strong><small>中央を拡大し、はみ出す部分をカット</small></span>
+            </label>
+          </fieldset>
+          <p class="ratio-note">どちらも元画像の縦横比は崩しません。9:16で小さく見える場合は「枠いっぱい」を選択してください。</p>
           <div class="trim-inputs">
             <div class="time-field">
               <label for="trimStart">開始（秒）</label>

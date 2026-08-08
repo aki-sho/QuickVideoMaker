@@ -22,6 +22,7 @@ type VideoResult = {
 };
 
 type OutputAspectRatio = "16:9" | "9:16";
+type ContentMode = "contain" | "cover";
 
 const paths: Paths = { music: "", image: "", output: "" };
 let isProcessing = false;
@@ -66,7 +67,7 @@ function syncForm() {
   }
   trimStart.disabled = isProcessing;
   trimEnd.disabled = isProcessing;
-  for (const input of document.querySelectorAll<HTMLInputElement>('input[name="outputAspect"]')) {
+  for (const input of document.querySelectorAll<HTMLInputElement>('input[name="outputAspect"], input[name="contentMode"]')) {
     input.disabled = isProcessing;
   }
 }
@@ -118,6 +119,11 @@ function analyzedRatio(result: VideoResult) {
 function selectedAspectRatio(): OutputAspectRatio {
   const value = document.querySelector<HTMLInputElement>('input[name="outputAspect"]:checked')?.value;
   return value === "9:16" ? "9:16" : "16:9";
+}
+
+function selectedContentMode(): ContentMode {
+  const value = document.querySelector<HTMLInputElement>('input[name="contentMode"]:checked')?.value;
+  return value === "cover" ? "cover" : "contain";
 }
 
 function showPreview(result: VideoResult) {
@@ -257,6 +263,7 @@ trimButton.addEventListener("click", async () => {
         startSeconds: Number(trimStart.value),
         endSeconds: Number(trimEnd.value),
         aspectRatio: selectedAspectRatio(),
+        contentMode: selectedContentMode(),
       },
     });
     showPreview(result);
