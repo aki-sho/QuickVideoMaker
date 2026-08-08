@@ -23,12 +23,15 @@ type VideoResult = {
 
 type OutputAspectRatio = "16:9" | "9:16";
 type ContentMode = "contain" | "cover";
+type OverlayScale = "small" | "medium" | "large" | "full";
+type OverlayPosition = "top-left" | "top-right" | "center" | "bottom-left" | "bottom-right";
 
 const paths: Paths = { music: "", image: "", output: "" };
 let isProcessing = false;
 let currentVideo: VideoResult | null = null;
 let isShowingTransformPreview = false;
 let displayedPreviewOffset = 0;
+let overlayImagePath = "";
 
 const musicInput = document.querySelector<HTMLInputElement>("#musicPath")!;
 const imageInput = document.querySelector<HTMLInputElement>("#imagePath")!;
@@ -48,6 +51,11 @@ const trimEnd = document.querySelector<HTMLInputElement>("#trimEnd")!;
 const trimmedDuration = document.querySelector<HTMLElement>("#trimmedDuration")!;
 const trimButton = document.querySelector<HTMLButtonElement>("#trimAndSave")!;
 const previewTransformButton = document.querySelector<HTMLButtonElement>("#previewTransform")!;
+const overlayImageInput = document.querySelector<HTMLInputElement>("#overlayImagePath")!;
+const selectOverlayImageButton = document.querySelector<HTMLButtonElement>("#selectOverlayImage")!;
+const clearOverlayImageButton = document.querySelector<HTMLButtonElement>("#clearOverlayImage")!;
+const overlayScale = document.querySelector<HTMLSelectElement>("#overlayScale")!;
+const overlayPosition = document.querySelector<HTMLSelectElement>("#overlayPosition")!;
 
 function setProgress(percent: number, message: string, kind: "normal" | "success" | "error" = "normal") {
   const bounded = Math.max(0, Math.min(100, Math.round(percent)));
@@ -62,9 +70,13 @@ function syncForm() {
   musicInput.value = paths.music;
   imageInput.value = paths.image;
   outputInput.value = paths.output;
+  overlayImageInput.value = overlayImagePath;
   createButton.disabled = isProcessing || !paths.music || !paths.image || !paths.output;
   trimButton.disabled = isProcessing || !currentVideo || !isTrimRangeValid();
   previewTransformButton.disabled = isProcessing || !currentVideo || !isTrimRangeValid();
+  clearOverlayImageButton.disabled = isProcessing || !overlayImagePath;
+  overlayScale.disabled = isProcessing || !overlayImagePath;
+  overlayPosition.disabled = isProcessing || !overlayImagePath;
 
   for (const button of document.querySelectorAll<HTMLButtonElement>("button.secondary, button.text-button")) {
     button.disabled = isProcessing;
@@ -137,8 +149,18 @@ function selectedContentMode(): ContentMode {
   return value === "cover" ? "cover" : "contain";
 }
 
+function selectedOverlay() {
+  if (!overlayImagePath) return null;
+  return {
+    imagePath: overlayImagePath,
+    scale: overlayScale.value as OverlayScale,
+    position: overlayPosition.value as OverlayPosition,
+  };
+}
+
 function showPreview(result: VideoResult) {
   currentVideo = result;
+  overlayImagePath = "";
   isShowingTransformPreview = false;
   displayedPreviewOffset = 0;
   previewSection.hidden = false;
@@ -239,6 +261,28 @@ trimEnd.addEventListener("input", updateTrimSummary);
 for (const input of document.querySelectorAll<HTMLInputElement>('input[name="outputAspect"], input[name="contentMode"]')) {
   input.addEventListener("change", markTransformPreviewOutdated);
 }
+overlayScale.addEventListener("change", markTransformPreviewOutdated);
+overlayPosition.addEventListener("change", markTransformPreviewOutdated);
+
+selectOverlayImageButton.addEventListener("click", async () => {
+  try {
+    const selected = await invoke<string | null>("select_image_file");
+    if (!selected) return;
+    overlayImagePath = selected;
+    markTransformPreviewOutdated();
+    syncForm();
+    setProgress(0, "重ねる画像を選択しました。［設定をプレビュー］で確認できます。");
+  } catch (error) {
+    setProgress(0, `画像を選択できませんでした: ${String(error)}`, "error");
+  }
+});
+
+clearOverlayImageButton.addEventListener("click", () => {
+  overlayImagePath = "";
+  markTransformPreviewOutdated();
+  syncForm();
+  setProgress(0, "重ねる画像を解除しました。");
+});
 
 document.querySelector("#setTrimStart")!.addEventListener("click", () => {
   const sourceTime = displayedPreviewOffset + previewVideo.currentTime;
@@ -280,6 +324,7 @@ previewTransformButton.addEventListener("click", async () => {
         endSeconds: Number(trimEnd.value),
         aspectRatio: selectedAspectRatio(),
         contentMode: selectedContentMode(),
+        overlay: selectedOverlay(),
       },
     });
     showTransformPreview(result);
@@ -316,6 +361,7 @@ trimButton.addEventListener("click", async () => {
         endSeconds: Number(trimEnd.value),
         aspectRatio: selectedAspectRatio(),
         contentMode: selectedContentMode(),
+        overlay: selectedOverlay(),
       },
     });
     showPreview(result);

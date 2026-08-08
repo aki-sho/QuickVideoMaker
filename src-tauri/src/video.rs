@@ -32,6 +32,7 @@ pub struct TrimVideoRequest {
     end_seconds: f64,
     aspect_ratio: OutputAspectRatio,
     content_mode: ContentMode,
+    overlay: Option<OverlaySettings>,
 }
 
 #[derive(Deserialize)]
@@ -41,6 +42,82 @@ pub struct PreviewVideoRequest {
     end_seconds: f64,
     aspect_ratio: OutputAspectRatio,
     content_mode: ContentMode,
+    overlay: Option<OverlaySettings>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OverlaySettings {
+    image_path: String,
+    scale: OverlayScale,
+    position: OverlayPosition,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum OverlayScale {
+    Small,
+    Medium,
+    Large,
+    Full,
+}
+
+impl OverlayScale {
+    fn percent(self) -> u32 {
+        match self {
+            Self::Small => 20,
+            Self::Medium => 35,
+            Self::Large => 50,
+            Self::Full => 100,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Small => "small",
+            Self::Medium => "medium",
+            Self::Large => "large",
+            Self::Full => "full",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum OverlayPosition {
+    TopLeft,
+    TopRight,
+    Center,
+    BottomLeft,
+    BottomRight,
+}
+
+impl OverlayPosition {
+    fn coordinates(self, margin_x: u32, margin_y: u32) -> String {
+        match self {
+            Self::TopLeft => format!("{margin_x}:{margin_y}"),
+            Self::TopRight => format!("W-w-{margin_x}:{margin_y}"),
+            Self::Center => "(W-w)/2:(H-h)/2".to_string(),
+            Self::BottomLeft => format!("{margin_x}:H-h-{margin_y}"),
+            Self::BottomRight => format!("W-w-{margin_x}:H-h-{margin_y}"),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::TopLeft => "top-left",
+            Self::TopRight => "top-right",
+            Self::Center => "center",
+            Self::BottomLeft => "bottom-left",
+            Self::BottomRight => "bottom-right",
+        }
+    }
+}
+
+struct ValidatedOverlay {
+    image_path: PathBuf,
+    scale: OverlayScale,
+    position: OverlayPosition,
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -412,6 +489,7 @@ fn render_preview_with_progress(
     let video_filter = request
         .content_mode
         .video_filter(output_width, output_height);
+    let overlay = validate_overlay(request.overlay)?;
     let preview_dir = paths.cache.join("previews");
     fs::create_dir_all(&preview_dir)
         .map_err(|error| format!("プレビューキャッシュを作成できません: {error}"))?;
@@ -426,11 +504,12 @@ fn render_preview_with_progress(
     let ffmpeg = paths.ffmpeg_path()?;
 
     paths.log(&format!(
-        "video preview started: {:.3}-{:.3} ({}, {})",
+        "video preview started: {:.3}-{:.3} ({}, {}, {})",
         request.start_seconds,
         request.start_seconds + preview_duration,
         request.aspect_ratio.label(),
-        request.content_mode.label()
+        request.content_mode.label(),
+        overlay_label(overlay.as_ref())
     ));
     progress(2, "保存前プレビューを準備しました。");
 
@@ -441,15 +520,17 @@ fn render_preview_with_progress(
         .arg("-ss")
         .arg(format!("{:.3}", request.start_seconds))
         .arg("-i")
-        .arg(&input)
-        .arg("-t")
-        .arg(format!("{preview_duration:.3}"))
-        .arg("-map")
-        .arg("0:v:0")
-        .arg("-map")
-        .arg("0:a:0?")
-        .arg("-vf")
-        .arg(video_filter)
+        .arg(&input);
+    add_overlay_input(&mut command, overlay.as_ref());
+    command.arg("-t").arg(format!("{preview_duration:.3}"));
+    add_video_filter_and_mapping(
+        &mut command,
+        video_filter,
+        output_width,
+        output_height,
+        overlay.as_ref(),
+    );
+    command
         .arg("-c:v")
         .arg("libx264")
         .arg("-preset")
@@ -533,13 +614,15 @@ fn trim_with_progress(
     let video_filter = request
         .content_mode
         .video_filter(output_width, output_height);
+    let overlay = validate_overlay(request.overlay)?;
     paths.log(&format!(
-        "video trim started: {} ({:.3}-{:.3}, {}, {})",
+        "video trim started: {} ({:.3}-{:.3}, {}, {}, {})",
         output.display(),
         request.start_seconds,
         request.end_seconds,
         request.aspect_ratio.label(),
-        request.content_mode.label()
+        request.content_mode.label(),
+        overlay_label(overlay.as_ref())
     ));
     progress(2, "カット範囲を準備しました。");
 
@@ -550,15 +633,17 @@ fn trim_with_progress(
         .arg("-ss")
         .arg(format!("{:.3}", request.start_seconds))
         .arg("-i")
-        .arg(&input)
-        .arg("-t")
-        .arg(format!("{trim_duration:.3}"))
-        .arg("-map")
-        .arg("0:v:0")
-        .arg("-map")
-        .arg("0:a:0?")
-        .arg("-vf")
-        .arg(video_filter)
+        .arg(&input);
+    add_overlay_input(&mut command, overlay.as_ref());
+    command.arg("-t").arg(format!("{trim_duration:.3}"));
+    add_video_filter_and_mapping(
+        &mut command,
+        video_filter,
+        output_width,
+        output_height,
+        overlay.as_ref(),
+    );
+    command
         .arg("-c:v")
         .arg("libx264")
         .arg("-preset")
@@ -715,6 +800,62 @@ fn validate_trim_range(start_seconds: f64, end_seconds: f64, duration: f64) -> R
     Ok(())
 }
 
+fn validate_overlay(value: Option<OverlaySettings>) -> Result<Option<ValidatedOverlay>, String> {
+    value
+        .map(|overlay| {
+            Ok(ValidatedOverlay {
+                image_path: validate_input(&overlay.image_path, "重ねる画像")?,
+                scale: overlay.scale,
+                position: overlay.position,
+            })
+        })
+        .transpose()
+}
+
+fn add_overlay_input(command: &mut Command, overlay: Option<&ValidatedOverlay>) {
+    if let Some(overlay) = overlay {
+        command
+            .arg("-loop")
+            .arg("1")
+            .arg("-i")
+            .arg(&overlay.image_path);
+    }
+}
+
+fn add_video_filter_and_mapping(
+    command: &mut Command,
+    base_filter: String,
+    output_width: u32,
+    output_height: u32,
+    overlay: Option<&ValidatedOverlay>,
+) {
+    if let Some(overlay) = overlay {
+        let percent = overlay.scale.percent();
+        let box_width = output_width * percent / 100;
+        let box_height = output_height * percent / 100;
+        let coordinates = overlay
+            .position
+            .coordinates((output_width / 40).max(8), (output_height / 40).max(8));
+        let filter = format!(
+            "[0:v]{base_filter}[base];[1:v]format=rgba,scale={box_width}:{box_height}:force_original_aspect_ratio=decrease[overlay];[base][overlay]overlay={coordinates}:format=auto,format=yuv420p[outv]"
+        );
+        command
+            .arg("-filter_complex")
+            .arg(filter)
+            .arg("-map")
+            .arg("[outv]");
+    } else {
+        command.arg("-map").arg("0:v:0").arg("-vf").arg(base_filter);
+    }
+    command.arg("-map").arg("0:a:0?");
+}
+
+fn overlay_label(overlay: Option<&ValidatedOverlay>) -> String {
+    overlay
+        .map(|value| format!("overlay:{}:{}", value.scale.label(), value.position.label()))
+        .unwrap_or_else(|| "no-overlay".to_string())
+}
+
 fn validate_input(value: &str, label: &str) -> Result<PathBuf, String> {
     let path = PathBuf::from(value);
     if !path.is_file() {
@@ -857,7 +998,7 @@ mod tests {
     use super::{
         compact_error, inspect_video, parse_duration_seconds, parse_video_dimensions,
         render_preview_with_progress, trim_with_progress, ContentMode, OutputAspectRatio,
-        PreviewVideoRequest, TrimVideoRequest,
+        OverlayPosition, OverlayScale, OverlaySettings, PreviewVideoRequest, TrimVideoRequest,
     };
     use crate::{portable::PortablePaths, state::ProcessControl};
     use std::{fs, path::PathBuf, process::Command, sync::Arc};
@@ -900,9 +1041,10 @@ mod tests {
         fs::create_dir_all(&test_dir).expect("test directory");
         let source = test_dir.join("source.mp4");
         let trimmed = test_dir.join("trimmed.mp4");
+        let overlay_image = test_dir.join("overlay.bmp");
         let ffmpeg = paths.ffmpeg_path().expect("embedded ffmpeg");
 
-        let status = Command::new(ffmpeg)
+        let status = Command::new(&ffmpeg)
             .args([
                 "-hide_banner",
                 "-loglevel",
@@ -929,6 +1071,26 @@ mod tests {
             .expect("create source video");
         assert!(status.success());
 
+        let overlay_status = Command::new(&ffmpeg)
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=red:s=80x60",
+                "-frames:v",
+                "1",
+                "-update",
+                "1",
+            ])
+            .arg(&overlay_image)
+            .status()
+            .expect("create overlay image");
+        assert!(overlay_status.success());
+
         let imported =
             inspect_video(&paths, &source.to_string_lossy()).expect("inspect imported video");
         assert!((2.9..=3.1).contains(&imported.duration_seconds));
@@ -943,6 +1105,11 @@ mod tests {
                 end_seconds: 3.0,
                 aspect_ratio: OutputAspectRatio::Portrait,
                 content_mode: ContentMode::Cover,
+                overlay: Some(OverlaySettings {
+                    image_path: overlay_image.to_string_lossy().into_owned(),
+                    scale: OverlayScale::Medium,
+                    position: OverlayPosition::BottomRight,
+                }),
             },
             Arc::new(|_, _| {}),
         )
@@ -961,6 +1128,11 @@ mod tests {
                 end_seconds: 1.7,
                 aspect_ratio: OutputAspectRatio::Portrait,
                 content_mode: ContentMode::Cover,
+                overlay: Some(OverlaySettings {
+                    image_path: overlay_image.to_string_lossy().into_owned(),
+                    scale: OverlayScale::Medium,
+                    position: OverlayPosition::BottomRight,
+                }),
             },
             Arc::new(|_, _| {}),
         )

@@ -118,6 +118,40 @@
             </label>
           </fieldset>
           <p class="ratio-note">どちらも元画像の縦横比は崩しません。9:16で小さく見える場合は「枠いっぱい」を選択してください。</p>
+          <div class="overlay-panel">
+            <div class="overlay-heading">
+              <div>
+                <strong>画像を重ねる（任意）</strong>
+                <small>プレビュー後から追加して、もう一度確認できます。</small>
+              </div>
+            </div>
+            <div class="overlay-file-row">
+              <input id="overlayImagePath" type="text" readonly placeholder="重ねる画像を選択してください" />
+              <button id="selectOverlayImage" class="secondary" type="button">画像を選択</button>
+              <button id="clearOverlayImage" class="overlay-clear" type="button">解除</button>
+            </div>
+            <div class="overlay-options">
+              <label>
+                サイズ
+                <select id="overlayScale">
+                  <option value="small">小（20%）</option>
+                  <option value="medium" selected>中（35%）</option>
+                  <option value="large">大（50%）</option>
+                  <option value="full">全面（100%）</option>
+                </select>
+              </label>
+              <label>
+                位置
+                <select id="overlayPosition">
+                  <option value="top-left">左上</option>
+                  <option value="top-right">右上</option>
+                  <option value="center">中央</option>
+                  <option value="bottom-left">左下</option>
+                  <option value="bottom-right" selected>右下</option>
+                </select>
+              </label>
+            </div>
+          </div>
           <div class="trim-inputs">
             <div class="time-field">
               <label for="trimStart">開始（秒）</label>
