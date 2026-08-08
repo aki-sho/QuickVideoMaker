@@ -30,6 +30,31 @@ pub struct TrimVideoRequest {
     output_path: String,
     start_seconds: f64,
     end_seconds: f64,
+    aspect_ratio: OutputAspectRatio,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+pub enum OutputAspectRatio {
+    #[serde(rename = "16:9")]
+    Landscape,
+    #[serde(rename = "9:16")]
+    Portrait,
+}
+
+impl OutputAspectRatio {
+    fn dimensions(self) -> (u32, u32) {
+        match self {
+            Self::Landscape => (1920, 1080),
+            Self::Portrait => (1080, 1920),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Landscape => "16:9",
+            Self::Portrait => "9:16",
+        }
+    }
 }
 
 #[derive(Clone, Serialize)]
@@ -37,6 +62,8 @@ pub struct TrimVideoRequest {
 pub struct VideoResult {
     pub output_path: String,
     pub duration_seconds: f64,
+    pub width: u32,
+    pub height: u32,
 }
 
 #[derive(Clone, Serialize)]
@@ -272,10 +299,14 @@ pub fn inspect_video(paths: &PortablePaths, value: &str) -> Result<VideoResult, 
     let duration_seconds = parse_duration_seconds(&details)
         .filter(|duration| *duration > 0.0)
         .ok_or_else(|| "動画の長さを取得できません。".to_string())?;
+    let (width, height) = parse_video_dimensions(&details)
+        .ok_or_else(|| "動画の幅と高さを取得できません。".to_string())?;
 
     Ok(VideoResult {
         output_path: input.to_string_lossy().into_owned(),
         duration_seconds,
+        width,
+        height,
     })
 }
 
@@ -330,11 +361,16 @@ fn trim_with_progress(
     let session = paths.session_temp()?;
     let temporary_output = session.join("trimmed-output.mp4");
     let trim_duration = request.end_seconds - request.start_seconds;
+    let (output_width, output_height) = request.aspect_ratio.dimensions();
+    let video_filter = format!(
+        "scale={output_width}:{output_height}:force_original_aspect_ratio=decrease,pad={output_width}:{output_height}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p"
+    );
     paths.log(&format!(
-        "video trim started: {} ({:.3}-{:.3})",
+        "video trim started: {} ({:.3}-{:.3}, {})",
         output.display(),
         request.start_seconds,
-        request.end_seconds
+        request.end_seconds,
+        request.aspect_ratio.label()
     ));
     progress(2, "カット範囲を準備しました。");
 
@@ -352,6 +388,8 @@ fn trim_with_progress(
         .arg("0:v:0")
         .arg("-map")
         .arg("0:a:0?")
+        .arg("-vf")
+        .arg(video_filter)
         .arg("-c:v")
         .arg("libx264")
         .arg("-preset")
@@ -360,8 +398,10 @@ fn trim_with_progress(
         .arg("aac")
         .arg("-b:a")
         .arg("192k")
-        .arg("-pix_fmt")
-        .arg("yuv420p")
+        .arg("-map_metadata")
+        .arg("-1")
+        .arg("-metadata:s:v:0")
+        .arg("rotate=0")
         .arg("-movflags")
         .arg("+faststart")
         .arg("-progress")
@@ -564,6 +604,25 @@ fn parse_duration_seconds(details: &str) -> Option<f64> {
     Some(hours * 3600.0 + minutes * 60.0 + seconds)
 }
 
+fn parse_video_dimensions(details: &str) -> Option<(u32, u32)> {
+    let dimensions_pattern = Regex::new(r"Video:[^\r\n]*?[, ](\d{2,5})x(\d{2,5})(?:[,\s])").ok()?;
+    let captures = dimensions_pattern.captures(details)?;
+    let mut width = captures[1].parse::<u32>().ok()?;
+    let mut height = captures[2].parse::<u32>().ok()?;
+
+    let rotation = Regex::new(r"rotation of\s+(-?\d+(?:\.\d+)?)")
+        .ok()
+        .and_then(|pattern| pattern.captures(details))
+        .and_then(|captures| captures[1].parse::<f64>().ok())
+        .unwrap_or_default()
+        .abs()
+        % 180.0;
+    if (45.0..135.0).contains(&rotation) {
+        std::mem::swap(&mut width, &mut height);
+    }
+    Some((width, height))
+}
+
 fn hide_console_window(command: &mut Command) {
     #[cfg(windows)]
     {
@@ -606,7 +665,8 @@ pub fn stop_active_process(process: &ProcessControl) {
 #[cfg(test)]
 mod tests {
     use super::{
-        compact_error, inspect_video, parse_duration_seconds, trim_with_progress, TrimVideoRequest,
+        compact_error, inspect_video, parse_duration_seconds, parse_video_dimensions,
+        trim_with_progress, OutputAspectRatio, TrimVideoRequest,
     };
     use crate::{portable::PortablePaths, state::ProcessControl};
     use std::{fs, process::Command, sync::Arc};
@@ -621,6 +681,18 @@ mod tests {
     fn parses_ffmpeg_duration() {
         let text = "Duration: 01:02:03.50, start: 0.000000, bitrate: 123 kb/s";
         assert_eq!(parse_duration_seconds(text), Some(3723.5));
+    }
+
+    #[test]
+    fn parses_dimensions_and_phone_rotation() {
+        let landscape = "Stream #0:0: Video: h264 (High), yuv420p, 1920x1080, 30 fps";
+        assert_eq!(parse_video_dimensions(landscape), Some((1920, 1080)));
+
+        let rotated =
+            "Stream #0:0: Video: h264, yuv420p, 1920x1080, 30 fps\nrotation of -90.00 degrees";
+        assert_eq!(parse_video_dimensions(rotated), Some((1080, 1920)));
+        assert_eq!(OutputAspectRatio::Landscape.dimensions(), (1920, 1080));
+        assert_eq!(OutputAspectRatio::Portrait.dimensions(), (1080, 1920));
     }
 
     #[test]
@@ -662,6 +734,7 @@ mod tests {
         let imported =
             inspect_video(&paths, &source.to_string_lossy()).expect("inspect imported video");
         assert!((2.9..=3.1).contains(&imported.duration_seconds));
+        assert_eq!((imported.width, imported.height), (320, 240));
 
         let result = trim_with_progress(
             paths.clone(),
@@ -671,11 +744,13 @@ mod tests {
                 output_path: trimmed.to_string_lossy().into_owned(),
                 start_seconds: 0.5,
                 end_seconds: 1.7,
+                aspect_ratio: OutputAspectRatio::Portrait,
             },
             Arc::new(|_, _| {}),
         )
         .expect("trim video");
         assert!((1.1..=1.3).contains(&result.duration_seconds));
+        assert_eq!((result.width, result.height), (1080, 1920));
         assert!(trimmed.is_file());
         let _ = fs::remove_dir_all(&test_dir);
     }

@@ -83,10 +83,28 @@
         <div class="trim-panel">
           <div class="trim-title">
             <div>
-              <h3>長さをカット</h3>
-              <p>残したい範囲の開始・終了時間を秒で指定します。</p>
+              <h3>長さと比率を変更</h3>
+              <p>元動画を解析し、残したい長さと出力比率を指定します。</p>
             </div>
           </div>
+          <div class="source-analysis">
+            <span>元動画の解析結果</span>
+            <strong id="videoDimensions">―</strong>
+          </div>
+          <fieldset class="ratio-selector">
+            <legend>出力比率</legend>
+            <label class="ratio-option">
+              <input type="radio" name="outputAspect" value="16:9" checked />
+              <span class="ratio-frame landscape-frame" aria-hidden="true"></span>
+              <span><strong>16:9</strong><small>横型・1920 × 1080</small></span>
+            </label>
+            <label class="ratio-option">
+              <input type="radio" name="outputAspect" value="9:16" />
+              <span class="ratio-frame portrait-frame" aria-hidden="true"></span>
+              <span><strong>9:16</strong><small>縦型・1080 × 1920</small></span>
+            </label>
+          </fieldset>
+          <p class="ratio-note">映像を歪めず全体を収め、足りない部分には黒い余白を追加します。</p>
           <div class="trim-inputs">
             <div class="time-field">
               <label for="trimStart">開始（秒）</label>
@@ -105,7 +123,7 @@
           </div>
           <button id="trimAndSave" class="primary trim-action" type="button">
             <span class="download-icon" aria-hidden="true">↓</span>
-            カットしてダウンロード
+            カット・比率変換してダウンロード
           </button>
         </div>
       </section>

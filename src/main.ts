@@ -17,7 +17,11 @@ type ProgressPayload = {
 type VideoResult = {
   outputPath: string;
   durationSeconds: number;
+  width: number;
+  height: number;
 };
+
+type OutputAspectRatio = "16:9" | "9:16";
 
 const paths: Paths = { music: "", image: "", output: "" };
 let isProcessing = false;
@@ -35,6 +39,7 @@ const previewSection = document.querySelector<HTMLElement>("#previewSection")!;
 const previewVideo = document.querySelector<HTMLVideoElement>("#videoPreview")!;
 const previewFileName = document.querySelector<HTMLParagraphElement>("#previewFileName")!;
 const videoDuration = document.querySelector<HTMLSpanElement>("#videoDuration")!;
+const videoDimensions = document.querySelector<HTMLElement>("#videoDimensions")!;
 const trimStart = document.querySelector<HTMLInputElement>("#trimStart")!;
 const trimEnd = document.querySelector<HTMLInputElement>("#trimEnd")!;
 const trimmedDuration = document.querySelector<HTMLElement>("#trimmedDuration")!;
@@ -61,6 +66,9 @@ function syncForm() {
   }
   trimStart.disabled = isProcessing;
   trimEnd.disabled = isProcessing;
+  for (const input of document.querySelectorAll<HTMLInputElement>('input[name="outputAspect"]')) {
+    input.disabled = isProcessing;
+  }
 }
 
 function formatTime(seconds: number) {
@@ -93,11 +101,34 @@ function suggestedCutName(path: string) {
   return fileName.replace(/\.mp4$/i, "") + "-cut.mp4";
 }
 
+function greatestCommonDivisor(first: number, second: number) {
+  let left = Math.max(1, Math.round(first));
+  let right = Math.max(1, Math.round(second));
+  while (right !== 0) {
+    [left, right] = [right, left % right];
+  }
+  return left;
+}
+
+function analyzedRatio(result: VideoResult) {
+  const divisor = greatestCommonDivisor(result.width, result.height);
+  return `${result.width / divisor}:${result.height / divisor}`;
+}
+
+function selectedAspectRatio(): OutputAspectRatio {
+  const value = document.querySelector<HTMLInputElement>('input[name="outputAspect"]:checked')?.value;
+  return value === "9:16" ? "9:16" : "16:9";
+}
+
 function showPreview(result: VideoResult) {
   currentVideo = result;
   previewSection.hidden = false;
   previewFileName.textContent = result.outputPath;
   videoDuration.textContent = formatTime(result.durationSeconds);
+  videoDimensions.textContent = `${result.width} × ${result.height}（${analyzedRatio(result)}）`;
+  const recommendedRatio: OutputAspectRatio = result.height > result.width ? "9:16" : "16:9";
+  const ratioInput = document.querySelector<HTMLInputElement>(`input[name="outputAspect"][value="${recommendedRatio}"]`);
+  if (ratioInput) ratioInput.checked = true;
   trimStart.value = "0";
   trimStart.max = result.durationSeconds.toFixed(3);
   trimEnd.value = result.durationSeconds.toFixed(1);
@@ -217,7 +248,7 @@ trimButton.addEventListener("click", async () => {
 
     isProcessing = true;
     syncForm();
-    setProgress(1, "動画をカットしています…");
+    setProgress(1, "動画の長さと比率を変換しています…");
     previewVideo.pause();
 
     const result = await invoke<VideoResult>("trim_video", {
@@ -225,10 +256,11 @@ trimButton.addEventListener("click", async () => {
         outputPath,
         startSeconds: Number(trimStart.value),
         endSeconds: Number(trimEnd.value),
+        aspectRatio: selectedAspectRatio(),
       },
     });
     showPreview(result);
-    setProgress(100, `カットした動画を保存しました: ${result.outputPath}`, "success");
+    setProgress(100, `${selectedAspectRatio()}の動画を保存しました: ${result.outputPath}`, "success");
   } catch (error) {
     setProgress(0, `カットできませんでした: ${String(error)}`, "error");
   } finally {

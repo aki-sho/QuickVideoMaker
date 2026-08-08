@@ -185,6 +185,69 @@ button:disabled { cursor: not-allowed; opacity: 0.48; }
 .trim-title h3 { margin: 0 0 4px; font-size: 15px; }
 .trim-title p { margin: 0; color: #778197; font-size: 12px; }
 
+.source-analysis {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 15px;
+  margin-top: 15px;
+  padding: 11px 13px;
+  border-radius: 9px;
+  color: #667188;
+  background: #edf1f8;
+  font-size: 12px;
+}
+
+.source-analysis strong { color: #283550; font-size: 13px; }
+
+.ratio-selector {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin: 15px 0 0;
+  padding: 0;
+  border: 0;
+}
+
+.ratio-selector legend { margin-bottom: 7px; color: #556077; font-size: 12px; font-weight: 650; }
+
+.ratio-option {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  min-height: 64px;
+  padding: 10px 12px;
+  border: 1px solid #d6dce9;
+  border-radius: 10px;
+  background: white;
+  cursor: pointer;
+  transition: border-color 120ms ease, box-shadow 120ms ease, background 120ms ease;
+}
+
+.ratio-option:has(input:checked) {
+  border-color: #6570ee;
+  background: #f4f5ff;
+  box-shadow: 0 0 0 2px rgba(91, 101, 229, 0.12);
+}
+
+.ratio-option input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.ratio-option > span:last-child { display: flex; flex-direction: column; gap: 2px; }
+.ratio-option strong { color: #26334e; font-size: 14px; }
+.ratio-option small { color: #7b8599; font-size: 11px; }
+
+.ratio-frame {
+  display: block;
+  flex: 0 0 auto;
+  border: 2px solid #7884a1;
+  border-radius: 3px;
+  background: linear-gradient(135deg, #d9def9, #c4daf6);
+}
+
+.landscape-frame { width: 36px; height: 21px; }
+.portrait-frame { width: 21px; height: 36px; margin: 0 7px; }
+.ratio-note { margin: 8px 0 0; color: #858ea1; font-size: 11px; }
+
 .trim-inputs {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -257,6 +320,7 @@ footer { margin-top: 15px; text-align: center; color: #8992a5; font-size: 12px; 
   .file-row { grid-template-columns: 1fr; }
   .secondary { width: 100%; }
   .trim-inputs { grid-template-columns: 1fr; }
+  .ratio-selector { grid-template-columns: 1fr; }
   .import-video-row { align-items: stretch; flex-direction: column; }
   .import-button { flex-basis: auto; width: 100%; }
 }
