@@ -51,6 +51,33 @@ pub struct OverlaySettings {
     image_path: String,
     scale: OverlayScale,
     position: OverlayPosition,
+    background: OverlayBackground,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum OverlayBackground {
+    Original,
+    White,
+    Black,
+}
+
+impl OverlayBackground {
+    fn color(self) -> Option<&'static str> {
+        match self {
+            Self::Original => None,
+            Self::White => Some("white"),
+            Self::Black => Some("black"),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Original => "original",
+            Self::White => "white",
+            Self::Black => "black",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -118,6 +145,7 @@ struct ValidatedOverlay {
     image_path: PathBuf,
     scale: OverlayScale,
     position: OverlayPosition,
+    background: OverlayBackground,
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -807,6 +835,7 @@ fn validate_overlay(value: Option<OverlaySettings>) -> Result<Option<ValidatedOv
                 image_path: validate_input(&overlay.image_path, "重ねる画像")?,
                 scale: overlay.scale,
                 position: overlay.position,
+                background: overlay.background,
             })
         })
         .transpose()
@@ -836,8 +865,12 @@ fn add_video_filter_and_mapping(
         let coordinates = overlay
             .position
             .coordinates((output_width / 40).max(8), (output_height / 40).max(8));
-        let filter = format!(
-            "[0:v]{base_filter}[base];[1:v]format=rgba,scale={box_width}:{box_height}:force_original_aspect_ratio=decrease[overlay];[base][overlay]overlay={coordinates}:format=auto,format=yuv420p[outv]"
+        let filter = build_overlay_filter(
+            &base_filter,
+            box_width,
+            box_height,
+            &coordinates,
+            overlay.background,
         );
         command
             .arg("-filter_complex")
@@ -850,9 +883,33 @@ fn add_video_filter_and_mapping(
     command.arg("-map").arg("0:a:0?");
 }
 
+fn build_overlay_filter(
+    base_filter: &str,
+    box_width: u32,
+    box_height: u32,
+    coordinates: &str,
+    background: OverlayBackground,
+) -> String {
+    match background.color() {
+        None => format!(
+            "[0:v]{base_filter}[base];[1:v]format=rgba,scale={box_width}:{box_height}:force_original_aspect_ratio=decrease[overlay];[base][overlay]overlay={coordinates}:format=auto,format=yuv420p[outv]"
+        ),
+        Some(color) => format!(
+            "[0:v]{base_filter}[base];[1:v]format=rgba,scale={box_width}:{box_height}:force_original_aspect_ratio=decrease[overlay_image];color=c={color}:s={box_width}x{box_height}:r=30,format=rgba[plate];[plate][overlay_image]overlay=(W-w)/2:(H-h)/2:format=auto[overlay];[base][overlay]overlay={coordinates}:format=auto,format=yuv420p[outv]"
+        ),
+    }
+}
+
 fn overlay_label(overlay: Option<&ValidatedOverlay>) -> String {
     overlay
-        .map(|value| format!("overlay:{}:{}", value.scale.label(), value.position.label()))
+        .map(|value| {
+            format!(
+                "overlay:{}:{}:{}",
+                value.scale.label(),
+                value.position.label(),
+                value.background.label()
+            )
+        })
         .unwrap_or_else(|| "no-overlay".to_string())
 }
 
@@ -998,7 +1055,8 @@ mod tests {
     use super::{
         compact_error, inspect_video, parse_duration_seconds, parse_video_dimensions,
         render_preview_with_progress, trim_with_progress, ContentMode, OutputAspectRatio,
-        OverlayPosition, OverlayScale, OverlaySettings, PreviewVideoRequest, TrimVideoRequest,
+        OverlayBackground, OverlayPosition, OverlayScale, OverlaySettings, PreviewVideoRequest,
+        TrimVideoRequest,
     };
     use crate::{portable::PortablePaths, state::ProcessControl};
     use std::{fs, path::PathBuf, process::Command, sync::Arc};
@@ -1109,6 +1167,7 @@ mod tests {
                     image_path: overlay_image.to_string_lossy().into_owned(),
                     scale: OverlayScale::Medium,
                     position: OverlayPosition::BottomRight,
+                    background: OverlayBackground::Black,
                 }),
             },
             Arc::new(|_, _| {}),
@@ -1132,6 +1191,7 @@ mod tests {
                     image_path: overlay_image.to_string_lossy().into_owned(),
                     scale: OverlayScale::Medium,
                     position: OverlayPosition::BottomRight,
+                    background: OverlayBackground::Black,
                 }),
             },
             Arc::new(|_, _| {}),

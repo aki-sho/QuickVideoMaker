@@ -25,6 +25,7 @@ type OutputAspectRatio = "16:9" | "9:16";
 type ContentMode = "contain" | "cover";
 type OverlayScale = "small" | "medium" | "large" | "full";
 type OverlayPosition = "top-left" | "top-right" | "center" | "bottom-left" | "bottom-right";
+type OverlayBackground = "original" | "white" | "black";
 
 const paths: Paths = { music: "", image: "", output: "" };
 let isProcessing = false;
@@ -56,6 +57,7 @@ const selectOverlayImageButton = document.querySelector<HTMLButtonElement>("#sel
 const clearOverlayImageButton = document.querySelector<HTMLButtonElement>("#clearOverlayImage")!;
 const overlayScale = document.querySelector<HTMLSelectElement>("#overlayScale")!;
 const overlayPosition = document.querySelector<HTMLSelectElement>("#overlayPosition")!;
+const overlayBackground = document.querySelector<HTMLSelectElement>("#overlayBackground")!;
 
 function setProgress(percent: number, message: string, kind: "normal" | "success" | "error" = "normal") {
   const bounded = Math.max(0, Math.min(100, Math.round(percent)));
@@ -77,6 +79,7 @@ function syncForm() {
   clearOverlayImageButton.disabled = isProcessing || !overlayImagePath;
   overlayScale.disabled = isProcessing || !overlayImagePath;
   overlayPosition.disabled = isProcessing || !overlayImagePath;
+  overlayBackground.disabled = isProcessing || !overlayImagePath;
 
   for (const button of document.querySelectorAll<HTMLButtonElement>("button.secondary, button.text-button")) {
     button.disabled = isProcessing;
@@ -155,6 +158,7 @@ function selectedOverlay() {
     imagePath: overlayImagePath,
     scale: overlayScale.value as OverlayScale,
     position: overlayPosition.value as OverlayPosition,
+    background: overlayBackground.value as OverlayBackground,
   };
 }
 
@@ -263,6 +267,7 @@ for (const input of document.querySelectorAll<HTMLInputElement>('input[name="out
 }
 overlayScale.addEventListener("change", markTransformPreviewOutdated);
 overlayPosition.addEventListener("change", markTransformPreviewOutdated);
+overlayBackground.addEventListener("change", markTransformPreviewOutdated);
 
 selectOverlayImageButton.addEventListener("click", async () => {
   try {
