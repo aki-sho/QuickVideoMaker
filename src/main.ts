@@ -22,6 +22,7 @@ type VideoResult = {
 };
 
 type OutputAspectRatio = "16:9" | "9:16";
+type CreateOutputSize = "landscape" | "portrait" | "image";
 type ContentMode = "contain" | "cover";
 type OverlayScale = "small" | "medium" | "large" | "full";
 type OverlayPosition = "top-left" | "top-right" | "center" | "bottom-left" | "bottom-right";
@@ -58,6 +59,8 @@ const clearOverlayImageButton = document.querySelector<HTMLButtonElement>("#clea
 const overlayScale = document.querySelector<HTMLSelectElement>("#overlayScale")!;
 const overlayPosition = document.querySelector<HTMLSelectElement>("#overlayPosition")!;
 const overlayBackground = document.querySelector<HTMLSelectElement>("#overlayBackground")!;
+const audioVolume = document.querySelector<HTMLInputElement>("#audioVolume")!;
+const audioVolumeValue = document.querySelector<HTMLOutputElement>("#audioVolumeValue")!;
 
 function setProgress(percent: number, message: string, kind: "normal" | "success" | "error" = "normal") {
   const bounded = Math.max(0, Math.min(100, Math.round(percent)));
@@ -80,13 +83,14 @@ function syncForm() {
   overlayScale.disabled = isProcessing || !overlayImagePath;
   overlayPosition.disabled = isProcessing || !overlayImagePath;
   overlayBackground.disabled = isProcessing || !overlayImagePath;
+  audioVolume.disabled = isProcessing;
 
   for (const button of document.querySelectorAll<HTMLButtonElement>("button.secondary, button.text-button")) {
     button.disabled = isProcessing;
   }
   trimStart.disabled = isProcessing;
   trimEnd.disabled = isProcessing;
-  for (const input of document.querySelectorAll<HTMLInputElement>('input[name="outputAspect"], input[name="contentMode"]')) {
+  for (const input of document.querySelectorAll<HTMLInputElement>('input[name="createOutputSize"], input[name="outputAspect"], input[name="contentMode"]')) {
     input.disabled = isProcessing;
   }
 }
@@ -147,6 +151,12 @@ function selectedAspectRatio(): OutputAspectRatio {
   return value === "9:16" ? "9:16" : "16:9";
 }
 
+function selectedCreateOutputSize(): CreateOutputSize {
+  const value = document.querySelector<HTMLInputElement>('input[name="createOutputSize"]:checked')?.value;
+  if (value === "portrait" || value === "image") return value;
+  return "landscape";
+}
+
 function selectedContentMode(): ContentMode {
   const value = document.querySelector<HTMLInputElement>('input[name="contentMode"]:checked')?.value;
   return value === "cover" ? "cover" : "contain";
@@ -165,6 +175,8 @@ function selectedOverlay() {
 function showPreview(result: VideoResult) {
   currentVideo = result;
   overlayImagePath = "";
+  audioVolume.value = "100";
+  audioVolumeValue.value = "100";
   isShowingTransformPreview = false;
   displayedPreviewOffset = 0;
   previewSection.hidden = false;
@@ -248,6 +260,7 @@ createButton.addEventListener("click", async () => {
         audioPath: paths.music,
         imagePath: paths.image,
         outputPath: paths.output,
+        outputSize: selectedCreateOutputSize(),
       },
     });
     showPreview(result);
@@ -268,6 +281,10 @@ for (const input of document.querySelectorAll<HTMLInputElement>('input[name="out
 overlayScale.addEventListener("change", markTransformPreviewOutdated);
 overlayPosition.addEventListener("change", markTransformPreviewOutdated);
 overlayBackground.addEventListener("change", markTransformPreviewOutdated);
+audioVolume.addEventListener("input", () => {
+  audioVolumeValue.value = audioVolume.value;
+  markTransformPreviewOutdated();
+});
 
 selectOverlayImageButton.addEventListener("click", async () => {
   try {
@@ -330,6 +347,7 @@ previewTransformButton.addEventListener("click", async () => {
         aspectRatio: selectedAspectRatio(),
         contentMode: selectedContentMode(),
         overlay: selectedOverlay(),
+        audioVolume: Number(audioVolume.value),
       },
     });
     showTransformPreview(result);
@@ -367,6 +385,7 @@ trimButton.addEventListener("click", async () => {
         aspectRatio: selectedAspectRatio(),
         contentMode: selectedContentMode(),
         overlay: selectedOverlay(),
+        audioVolume: Number(audioVolume.value),
       },
     });
     showPreview(result);

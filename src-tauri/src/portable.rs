@@ -134,12 +134,24 @@ impl PortablePaths {
     pub fn clean_preview_cache(&self) -> Result<(), String> {
         let preview_cache = self.cache.join("previews");
         if preview_cache.exists() {
-            fs::remove_dir_all(&preview_cache).map_err(|error| {
-                format!(
-                    "プレビューキャッシュを削除できません（{}）: {error}",
-                    preview_cache.display()
-                )
-            })?;
+            for entry in fs::read_dir(&preview_cache)
+                .map_err(|error| format!("プレビューキャッシュを読み取れません: {error}"))?
+            {
+                let path = entry
+                    .map_err(|error| format!("プレビューキャッシュを読み取れません: {error}"))?
+                    .path();
+                if path.is_dir() {
+                    fs::remove_dir_all(&path)
+                } else {
+                    fs::remove_file(&path)
+                }
+                .map_err(|error| {
+                    format!(
+                        "プレビューキャッシュを削除できません（{}）: {error}",
+                        path.display()
+                    )
+                })?;
+            }
         }
         fs::create_dir_all(&preview_cache)
             .map_err(|error| format!("プレビューキャッシュを作成できません: {error}"))

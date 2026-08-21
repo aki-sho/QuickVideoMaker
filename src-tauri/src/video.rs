@@ -22,6 +22,33 @@ pub struct CreateVideoRequest {
     audio_path: String,
     image_path: String,
     output_path: String,
+    output_size: CreateOutputSize,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CreateOutputSize {
+    Landscape,
+    Portrait,
+    Image,
+}
+
+impl CreateOutputSize {
+    fn video_filter(self) -> &'static str {
+        match self {
+            Self::Landscape => "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p",
+            Self::Portrait => "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p",
+            Self::Image => "scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1,format=yuv420p",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Landscape => "1920x1080",
+            Self::Portrait => "1080x1920",
+            Self::Image => "image-size",
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -33,6 +60,7 @@ pub struct TrimVideoRequest {
     aspect_ratio: OutputAspectRatio,
     content_mode: ContentMode,
     overlay: Option<OverlaySettings>,
+    audio_volume: u8,
 }
 
 #[derive(Deserialize)]
@@ -43,6 +71,7 @@ pub struct PreviewVideoRequest {
     aspect_ratio: OutputAspectRatio,
     content_mode: ContentMode,
     overlay: Option<OverlaySettings>,
+    audio_volume: u8,
 }
 
 #[derive(Deserialize)]
@@ -256,7 +285,11 @@ pub fn generate(
     let temporary_output = session.join("video-output.mp4");
 
     emit_progress(&app, 2, "同梱FFmpegを準備しました。");
-    paths.log(&format!("video creation started: {}", output.display()));
+    paths.log(&format!(
+        "video creation started: {} ({})",
+        output.display(),
+        request.output_size.label()
+    ));
 
     let mut command = Command::new(&ffmpeg);
     command
@@ -271,7 +304,7 @@ pub fn generate(
         .arg("-i")
         .arg(&audio)
         .arg("-vf")
-        .arg("scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,format=yuv420p")
+        .arg(request.output_size.video_filter())
         .arg("-c:v")
         .arg("libx264")
         .arg("-preset")
@@ -511,6 +544,7 @@ fn render_preview_with_progress(
         request.end_seconds,
         source.duration_seconds,
     )?;
+    validate_audio_volume(request.audio_volume)?;
 
     let preview_duration = (request.end_seconds - request.start_seconds).min(10.0);
     let (output_width, output_height) = request.aspect_ratio.preview_dimensions();
@@ -558,6 +592,7 @@ fn render_preview_with_progress(
         output_height,
         overlay.as_ref(),
     );
+    add_audio_volume_filter(&mut command, request.audio_volume);
     command
         .arg("-c:v")
         .arg("libx264")
@@ -632,6 +667,7 @@ fn trim_with_progress(
         request.end_seconds,
         source.duration_seconds,
     )?;
+    validate_audio_volume(request.audio_volume)?;
 
     let output = validate_trim_output(&request.output_path, &input)?;
     let ffmpeg = paths.ffmpeg_path()?;
@@ -671,6 +707,7 @@ fn trim_with_progress(
         output_height,
         overlay.as_ref(),
     );
+    add_audio_volume_filter(&mut command, request.audio_volume);
     command
         .arg("-c:v")
         .arg("libx264")
@@ -826,6 +863,21 @@ fn validate_trim_range(start_seconds: f64, end_seconds: f64, duration: f64) -> R
         ));
     }
     Ok(())
+}
+
+fn validate_audio_volume(volume: u8) -> Result<(), String> {
+    if volume > 100 {
+        return Err("元の音声は0から100の間で指定してください。".to_string());
+    }
+    Ok(())
+}
+
+fn add_audio_volume_filter(command: &mut Command, volume: u8) {
+    if volume < 100 {
+        command
+            .arg("-af")
+            .arg(format!("volume={:.2}", f64::from(volume) / 100.0));
+    }
 }
 
 fn validate_overlay(value: Option<OverlaySettings>) -> Result<Option<ValidatedOverlay>, String> {
@@ -1054,12 +1106,36 @@ pub fn stop_active_process(process: &ProcessControl) {
 mod tests {
     use super::{
         compact_error, inspect_video, parse_duration_seconds, parse_video_dimensions,
-        render_preview_with_progress, trim_with_progress, ContentMode, OutputAspectRatio,
-        OverlayBackground, OverlayPosition, OverlayScale, OverlaySettings, PreviewVideoRequest,
-        TrimVideoRequest,
+        render_preview_with_progress, trim_with_progress, validate_audio_volume, ContentMode,
+        CreateOutputSize, OutputAspectRatio, OverlayBackground, OverlayPosition, OverlayScale,
+        OverlaySettings, PreviewVideoRequest, TrimVideoRequest,
     };
     use crate::{portable::PortablePaths, state::ProcessControl};
-    use std::{fs, path::PathBuf, process::Command, sync::Arc};
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+        process::{Command, Stdio},
+        sync::Arc,
+    };
+
+    fn mean_volume(ffmpeg: &Path, input: &Path) -> f64 {
+        let output = Command::new(ffmpeg)
+            .arg("-hide_banner")
+            .arg("-i")
+            .arg(input)
+            .args(["-af", "volumedetect", "-f", "null", "-"])
+            .stdout(Stdio::null())
+            .output()
+            .expect("measure audio volume");
+        String::from_utf8_lossy(&output.stderr)
+            .lines()
+            .find_map(|line| {
+                line.split_once("mean_volume:")
+                    .and_then(|(_, value)| value.trim().split_whitespace().next())
+                    .and_then(|value| value.parse::<f64>().ok())
+            })
+            .expect("mean volume")
+    }
 
     #[test]
     fn chooses_a_useful_ffmpeg_error() {
@@ -1090,6 +1166,18 @@ mod tests {
         assert!(ContentMode::Cover
             .video_filter(1080, 1920)
             .contains("force_original_aspect_ratio=increase,crop=1080:1920"));
+        assert!(CreateOutputSize::Landscape
+            .video_filter()
+            .contains("1920:1080"));
+        assert!(CreateOutputSize::Portrait
+            .video_filter()
+            .contains("1080:1920"));
+        assert!(CreateOutputSize::Image
+            .video_filter()
+            .contains("trunc(iw/2)*2:trunc(ih/2)*2"));
+        assert!(validate_audio_volume(0).is_ok());
+        assert!(validate_audio_volume(100).is_ok());
+        assert!(validate_audio_volume(101).is_err());
     }
 
     #[test]
@@ -1100,6 +1188,8 @@ mod tests {
         let source = test_dir.join("source.mp4");
         let trimmed = test_dir.join("trimmed.mp4");
         let overlay_image = test_dir.join("overlay.bmp");
+        let still_image = test_dir.join("still.bmp");
+        let image_sized_video = test_dir.join("image-sized.mp4");
         let ffmpeg = paths.ffmpeg_path().expect("embedded ffmpeg");
 
         let status = Command::new(&ffmpeg)
@@ -1149,6 +1239,48 @@ mod tests {
             .expect("create overlay image");
         assert!(overlay_status.success());
 
+        let still_status = Command::new(&ffmpeg)
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=green:s=322x242",
+                "-frames:v",
+                "1",
+                "-update",
+                "1",
+            ])
+            .arg(&still_image)
+            .status()
+            .expect("create still image");
+        assert!(still_status.success());
+
+        let image_size_status = Command::new(&ffmpeg)
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-loop",
+                "1",
+                "-i",
+            ])
+            .arg(&still_image)
+            .args(["-f", "lavfi", "-i", "sine=frequency=330:duration=1", "-vf"])
+            .arg(CreateOutputSize::Image.video_filter())
+            .args(["-c:v", "libx264", "-c:a", "aac", "-shortest"])
+            .arg(&image_sized_video)
+            .status()
+            .expect("create image-sized video");
+        assert!(image_size_status.success());
+        let image_sized = inspect_video(&paths, &image_sized_video.to_string_lossy())
+            .expect("inspect image-sized video");
+        assert_eq!((image_sized.width, image_sized.height), (322, 242));
+
         let imported =
             inspect_video(&paths, &source.to_string_lossy()).expect("inspect imported video");
         assert!((2.9..=3.1).contains(&imported.duration_seconds));
@@ -1169,6 +1301,7 @@ mod tests {
                     position: OverlayPosition::BottomRight,
                     background: OverlayBackground::Black,
                 }),
+                audio_volume: 40,
             },
             Arc::new(|_, _| {}),
         )
@@ -1180,7 +1313,7 @@ mod tests {
         let result = trim_with_progress(
             paths.clone(),
             Arc::new(ProcessControl::default()),
-            source,
+            source.clone(),
             TrimVideoRequest {
                 output_path: trimmed.to_string_lossy().into_owned(),
                 start_seconds: 0.5,
@@ -1193,6 +1326,7 @@ mod tests {
                     position: OverlayPosition::BottomRight,
                     background: OverlayBackground::Black,
                 }),
+                audio_volume: 40,
             },
             Arc::new(|_, _| {}),
         )
@@ -1200,6 +1334,10 @@ mod tests {
         assert!((1.1..=1.3).contains(&result.duration_seconds));
         assert_eq!((result.width, result.height), (1080, 1920));
         assert!(trimmed.is_file());
+        let source_volume = mean_volume(&ffmpeg, &source);
+        let trimmed_volume = mean_volume(&ffmpeg, &trimmed);
+        assert!(trimmed_volume < source_volume - 6.0);
+        assert!(trimmed_volume > source_volume - 10.0);
         let _ = fs::remove_dir_all(&test_dir);
         paths.clean_preview_cache().expect("clean preview cache");
     }

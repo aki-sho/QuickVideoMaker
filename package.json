@@ -1,6 +1,6 @@
 {
   "name": "quick-video-maker",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "private": true,
   "description": "Create an MP4 video from one audio file and one still image.",
   "type": "module",

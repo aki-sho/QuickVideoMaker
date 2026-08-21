@@ -75,6 +75,32 @@ button, input, select { font: inherit; }
 .file-copy { min-width: 0; }
 .file-copy label { display: block; margin: 0 0 7px; color: #556077; font-size: 13px; font-weight: 600; }
 
+.create-size-selector {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  margin: 18px 0 0;
+  padding: 0;
+  border: 0;
+}
+
+.create-size-selector legend { margin-bottom: 8px; color: #556077; font-size: 13px; font-weight: 650; }
+.create-size-option {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 12px;
+  border: 1px solid #d6dce9;
+  border-radius: 10px;
+  background: #f9fafc;
+  cursor: pointer;
+}
+.create-size-option:has(input:checked) { border-color: #6570ee; background: #f1f3ff; box-shadow: 0 0 0 2px rgba(91, 101, 229, 0.1); }
+.create-size-option input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.create-size-option strong { color: #293650; font-size: 13px; }
+.create-size-option small { color: #7b8599; font-size: 10px; }
+
 input {
   width: 100%;
   height: 42px;
@@ -200,11 +226,39 @@ button:disabled { cursor: not-allowed; opacity: 0.48; }
 
 .source-analysis strong { color: #283550; font-size: 13px; }
 
+.edit-section {
+  margin-top: 14px;
+  padding: 15px;
+  border: 1px solid #dbe1ed;
+  border-left: 4px solid #6570ee;
+  border-radius: 11px;
+  background: white;
+}
+
+.edit-section-heading,
+.overlay-heading { display: flex; align-items: center; gap: 11px; }
+.edit-section-heading h4,
+.overlay-heading h4 { margin: 0; color: #25324d; font-size: 14px; }
+.edit-section-heading p,
+.overlay-heading small { display: block; margin: 3px 0 0; color: #7b8599; font-size: 11px; font-weight: 400; }
+.edit-number {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  color: white;
+  background: linear-gradient(135deg, #655cf6, #3a8bf5);
+  font-size: 13px;
+  font-weight: 750;
+}
+
 .ratio-selector {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 12px;
-  margin: 15px 0 0;
+  margin: 12px 0 0;
   padding: 0;
   border: 0;
 }
@@ -252,7 +306,7 @@ button:disabled { cursor: not-allowed; opacity: 0.48; }
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 12px;
-  margin: 15px 0 0;
+  margin: 12px 0 0;
   padding: 0;
   border: 0;
 }
@@ -309,15 +363,8 @@ button:disabled { cursor: not-allowed; opacity: 0.48; }
 .cover-preview i { width: 82px; height: 46px; }
 
 .overlay-panel {
-  margin-top: 15px;
-  padding: 14px;
-  border: 1px solid #dbe1ed;
-  border-radius: 10px;
-  background: white;
+  margin-top: 14px;
 }
-
-.overlay-heading strong { display: block; color: #293650; font-size: 13px; }
-.overlay-heading small { display: block; margin-top: 3px; color: #7b8599; font-size: 11px; }
 
 .overlay-file-row {
   display: grid;
@@ -356,7 +403,7 @@ select:disabled { opacity: 0.5; }
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 14px;
-  margin-top: 15px;
+  margin-top: 12px;
 }
 
 .time-field label { display: block; margin-bottom: 6px; color: #556077; font-size: 12px; font-weight: 650; }
@@ -388,6 +435,25 @@ select:disabled { opacity: 0.5; }
 }
 
 .trim-summary strong { color: #25304a; }
+.audio-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 58px;
+  align-items: center;
+  gap: 12px;
+  margin-top: 13px;
+}
+.audio-control input { height: auto; padding: 0; accent-color: #5f66e8; cursor: pointer; }
+.audio-control output {
+  display: grid;
+  place-items: center;
+  height: 38px;
+  border-radius: 9px;
+  color: #3945c4;
+  background: #eef0ff;
+  font-size: 15px;
+  font-weight: 750;
+}
+.audio-scale { display: flex; justify-content: space-between; margin-top: 6px; color: #8a93a5; font-size: 10px; }
 .transform-actions {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -441,6 +507,7 @@ footer { margin-top: 15px; text-align: center; color: #8992a5; font-size: 12px; 
   body { min-width: 420px; }
   .app-shell { width: calc(100% - 28px); padding-top: 24px; }
   .file-row { grid-template-columns: 1fr; }
+  .create-size-selector { grid-template-columns: 1fr; }
   .secondary { width: 100%; }
   .trim-inputs { grid-template-columns: 1fr; }
   .ratio-selector { grid-template-columns: 1fr; }

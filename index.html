@@ -36,6 +36,25 @@
           <button id="selectImage" class="secondary" type="button">画像選択</button>
         </div>
 
+        <fieldset class="create-size-selector">
+          <legend>作成する動画のサイズ</legend>
+          <label class="create-size-option">
+            <input type="radio" name="createOutputSize" value="landscape" checked />
+            <strong>1920 × 1080</strong>
+            <small>横型・標準</small>
+          </label>
+          <label class="create-size-option">
+            <input type="radio" name="createOutputSize" value="portrait" />
+            <strong>1080 × 1920</strong>
+            <small>縦型・スマートフォン</small>
+          </label>
+          <label class="create-size-option">
+            <input type="radio" name="createOutputSize" value="image" />
+            <strong>画像サイズ</strong>
+            <small>選択画像と同じ大きさ</small>
+          </label>
+        </fieldset>
+
         <div class="file-row">
           <div class="file-copy">
             <label for="outputPath">保存先</label>
@@ -91,8 +110,13 @@
             <span>元動画の解析結果</span>
             <strong id="videoDimensions">―</strong>
           </div>
+          <section class="edit-section" aria-labelledby="edit-ratio-heading">
+            <div class="edit-section-heading">
+              <span class="edit-number">1</span>
+              <div><h4 id="edit-ratio-heading">出力比率</h4><p>完成動画の縦横比を選びます。</p></div>
+            </div>
           <fieldset class="ratio-selector">
-            <legend>出力比率</legend>
+            <legend>比率を選択</legend>
             <label class="ratio-option">
               <input type="radio" name="outputAspect" value="16:9" checked />
               <span class="ratio-frame landscape-frame" aria-hidden="true"></span>
@@ -104,8 +128,14 @@
               <span><strong>9:16</strong><small>縦型・1080 × 1920</small></span>
             </label>
           </fieldset>
+          </section>
+          <section class="edit-section" aria-labelledby="edit-content-heading">
+            <div class="edit-section-heading">
+              <span class="edit-number">2</span>
+              <div><h4 id="edit-content-heading">中身の画像表示</h4><p>全体を残すか、枠いっぱいに拡大します。</p></div>
+            </div>
           <fieldset class="content-selector">
-            <legend>中身の画像表示</legend>
+            <legend>表示方法を選択</legend>
             <label class="content-option">
               <input type="radio" name="contentMode" value="contain" checked />
               <span class="content-preview contain-preview" aria-hidden="true"><i></i></span>
@@ -118,10 +148,12 @@
             </label>
           </fieldset>
           <p class="ratio-note">どちらも元画像の縦横比は崩しません。9:16で小さく見える場合は「枠いっぱい」を選択してください。</p>
-          <div class="overlay-panel">
+          </section>
+          <section class="edit-section overlay-panel" aria-labelledby="edit-overlay-heading">
             <div class="overlay-heading">
+              <span class="edit-number">3</span>
               <div>
-                <strong>画像を重ねる（任意）</strong>
+                <h4 id="edit-overlay-heading">画像を重ねる（任意）</h4>
                 <small>プレビュー後から追加して、もう一度確認できます。</small>
               </div>
             </div>
@@ -160,7 +192,12 @@
               </label>
             </div>
             <p class="overlay-note">白・黒は選択サイズの範囲を隠し、その中央へ画像を表示します。全面なら元映像全体を隠せます。</p>
-          </div>
+          </section>
+          <section class="edit-section" aria-labelledby="edit-trim-heading">
+            <div class="edit-section-heading">
+              <span class="edit-number">4</span>
+              <div><h4 id="edit-trim-heading">カット</h4><p>残す範囲の開始時間と終了時間を指定します。</p></div>
+            </div>
           <div class="trim-inputs">
             <div class="time-field">
               <label for="trimStart">開始（秒）</label>
@@ -177,6 +214,18 @@
             <span>カット後の長さ</span>
             <strong id="trimmedDuration">0.0秒</strong>
           </div>
+          </section>
+          <section class="edit-section" aria-labelledby="edit-audio-heading">
+            <div class="edit-section-heading">
+              <span class="edit-number">5</span>
+              <div><h4 id="edit-audio-heading">元の音声</h4><p>元動画の音量を0～100で調整します。100が元の音量です。</p></div>
+            </div>
+            <div class="audio-control">
+              <input id="audioVolume" type="range" min="0" max="100" step="1" value="100" aria-label="元の音声音量" />
+              <output id="audioVolumeValue" for="audioVolume">100</output>
+            </div>
+            <div class="audio-scale"><span>0（無音）</span><span>100（元の音量）</span></div>
+          </section>
           <div class="transform-actions">
             <button id="previewTransform" class="preview-action" type="button">
               <span aria-hidden="true">▶</span>
