@@ -1,4 +1,5 @@
 mod dialogs;
+mod metadata;
 mod portable;
 mod preview;
 mod state;

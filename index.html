@@ -306,6 +306,30 @@
               <p class="audio-note">ループOFFでは追加音声が終わった後も、動画は指定時間まで続きます。長い音声は動画終了位置でカットされます。</p>
             </div>
           </section>
+          <details id="metadataPanel" class="metadata-panel">
+            <summary>
+              <span><strong>メタデータ管理</strong><small>確認項目と、編集・削除できる項目</small></span>
+              <span class="metadata-summary-action">開く</span>
+            </summary>
+            <div class="metadata-panel-body">
+              <section class="metadata-group" aria-labelledby="metadata-readonly-heading">
+                <div class="metadata-group-heading">
+                  <h4 id="metadata-readonly-heading">① 確認項目</h4>
+                  <p>再エンコードや再生状態に影響するため、この画面では変更しません。</p>
+                </div>
+                <dl id="metadataReadonlyList" class="metadata-readonly-list"></dl>
+                <p class="metadata-c2pa-note">C2PAは通常タグのように変更せず、FFmpegが確認できた存在・内容のみを表示します。</p>
+              </section>
+              <section class="metadata-group" aria-labelledby="metadata-editable-heading">
+                <div class="metadata-group-heading">
+                  <h4 id="metadata-editable-heading">② 編集・削除できる項目</h4>
+                  <p>変更値を保存します。空欄の項目は元動画から引き継ぎません。</p>
+                </div>
+                <div id="metadataEditableFields" class="metadata-editable-grid"></div>
+                <p class="metadata-edit-note">一部の再生ソフトは独自タグを表示しません。EncoderなどはFFmpegが自動生成する場合があります。</p>
+              </section>
+            </div>
+          </details>
           <div class="transform-actions">
             <button id="previewTransform" class="preview-action" type="button">
               <span aria-hidden="true">▶</span>

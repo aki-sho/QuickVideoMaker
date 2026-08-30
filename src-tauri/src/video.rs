@@ -1,3 +1,4 @@
+use crate::metadata::{self, EditableMetadata, VideoMetadata};
 use crate::{portable::PortablePaths, state::ProcessControl};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -61,6 +62,7 @@ pub struct TrimVideoRequest {
     content_mode: ContentMode,
     overlay: Option<OverlaySettings>,
     watermark: Option<WatermarkSettings>,
+    metadata: EditableMetadata,
     audio_volume: u8,
     remove_original_audio: bool,
     added_audio: Option<AddedAudioSettings>,
@@ -285,6 +287,7 @@ pub struct VideoResult {
     pub duration_seconds: f64,
     pub width: u32,
     pub height: u32,
+    pub metadata: VideoMetadata,
 }
 
 #[derive(Clone, Serialize)]
@@ -527,11 +530,13 @@ pub fn inspect_video(paths: &PortablePaths, value: &str) -> Result<VideoResult, 
     let (width, height) = parse_video_dimensions(&details)
         .ok_or_else(|| "動画の幅と高さを取得できません。".to_string())?;
 
+    let metadata = metadata::inspect(paths, &input, &details, width, height);
     Ok(VideoResult {
         output_path: input.to_string_lossy().into_owned(),
         duration_seconds,
         width,
         height,
+        metadata,
     })
 }
 
@@ -789,11 +794,13 @@ fn trim_with_progress(
         .arg("-b:a")
         .arg("192k")
         .arg("-map_metadata")
-        .arg("-1")
+        .arg("-1");
+    metadata::apply_to_command(&mut command, &request.metadata)?;
+    command
         .arg("-metadata:s:v:0")
         .arg("rotate=0")
         .arg("-movflags")
-        .arg("+faststart")
+        .arg("+faststart+use_metadata_tags")
         .arg("-progress")
         .arg("pipe:1")
         .arg("-nostats")
@@ -1401,7 +1408,7 @@ mod tests {
         OverlaySettings, PreviewVideoRequest, TrimVideoRequest, ValidatedWatermark,
         WatermarkSettings,
     };
-    use crate::{portable::PortablePaths, state::ProcessControl};
+    use crate::{metadata::EditableMetadata, portable::PortablePaths, state::ProcessControl};
     use std::{
         fs,
         path::{Path, PathBuf},
@@ -1523,6 +1530,14 @@ mod tests {
                 "yuv420p",
                 "-c:a",
                 "aac",
+                "-metadata",
+                "title=Original Title",
+                "-metadata",
+                "artist=Original Artist",
+                "-metadata",
+                "remove_me=delete this",
+                "-movflags",
+                "+faststart+use_metadata_tags",
                 "-shortest",
             ])
             .arg(&source)
@@ -1614,6 +1629,16 @@ mod tests {
             inspect_video(&paths, &source.to_string_lossy()).expect("inspect imported video");
         assert!((2.9..=3.1).contains(&imported.duration_seconds));
         assert_eq!((imported.width, imported.height), (320, 240));
+        assert_eq!(imported.metadata.technical.frame_rate, "30 fps");
+        assert_eq!(imported.metadata.technical.video_codec, "H.264");
+        assert_eq!(imported.metadata.technical.audio_codec, "AAC");
+        assert_eq!(imported.metadata.editable.title, "Original Title");
+        assert_eq!(imported.metadata.editable.artist_author, "Original Artist");
+        assert!(imported
+            .metadata
+            .editable
+            .custom_metadata
+            .contains("remove_me=delete this"));
 
         let silent_preview = render_preview_with_progress(
             paths.clone(),
@@ -1697,6 +1722,16 @@ mod tests {
                     angle: 15,
                     count: 3,
                 }),
+                metadata: EditableMetadata {
+                    title: "Edited Title".to_string(),
+                    encoded_by: "QuickVideoMaker".to_string(),
+                    software: "QuickVideoMaker".to_string(),
+                    version: "1.6.0".to_string(),
+                    handler_name: "QuickVideoMaker Video".to_string(),
+                    custom_metadata: "custom_key=Custom Value".to_string(),
+                    xmp: "<xmp>QuickVideoMaker</xmp>".to_string(),
+                    ..EditableMetadata::default()
+                },
                 audio_volume: 40,
                 remove_original_audio: false,
                 added_audio: None,
@@ -1707,6 +1742,22 @@ mod tests {
         assert!((1.1..=1.3).contains(&result.duration_seconds));
         assert_eq!((result.width, result.height), (1080, 1920));
         assert!(trimmed.is_file());
+        assert_eq!(result.metadata.editable.title, "Edited Title");
+        assert!(result.metadata.editable.artist_author.is_empty());
+        assert!(result
+            .metadata
+            .editable
+            .custom_metadata
+            .contains("custom_key=Custom Value"));
+        assert!(!result
+            .metadata
+            .editable
+            .custom_metadata
+            .contains("remove_me"));
+        assert_eq!(
+            result.metadata.editable.handler_name,
+            "QuickVideoMaker Video"
+        );
         let source_volume = mean_volume(&ffmpeg, &source);
         let trimmed_volume = mean_volume(&ffmpeg, &trimmed);
         assert!(trimmed_volume < source_volume - 6.0);

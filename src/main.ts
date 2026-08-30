@@ -3,6 +3,7 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
 import { calculateWatermarkBox, calculateWatermarkPoints, initialWatermarkSpacing } from "./watermark-layout";
+import { MetadataEditor, type VideoMetadata } from "./metadata-editor";
 
 type Paths = {
   music: string;
@@ -20,6 +21,7 @@ type VideoResult = {
   durationSeconds: number;
   width: number;
   height: number;
+  metadata: VideoMetadata;
 };
 
 type ImagePreviewData = {
@@ -43,6 +45,7 @@ let overlayImagePath = "";
 let addedAudioPath = "";
 let watermarkImagePath = "";
 let watermarkPreviewUrl = "";
+let currentAppVersion = "";
 
 const musicInput = document.querySelector<HTMLInputElement>("#musicPath")!;
 const imageInput = document.querySelector<HTMLInputElement>("#imagePath")!;
@@ -98,6 +101,9 @@ const addedAudioInput = document.querySelector<HTMLInputElement>("#addedAudioPat
 const selectAddedAudioButton = document.querySelector<HTMLButtonElement>("#selectAddedAudio")!;
 const clearAddedAudioButton = document.querySelector<HTMLButtonElement>("#clearAddedAudio")!;
 const loopAddedAudio = document.querySelector<HTMLInputElement>("#loopAddedAudio")!;
+const metadataReadonlyList = document.querySelector<HTMLElement>("#metadataReadonlyList")!;
+const metadataEditableFields = document.querySelector<HTMLElement>("#metadataEditableFields")!;
+const metadataEditor = new MetadataEditor(metadataReadonlyList, metadataEditableFields);
 
 function setProgress(percent: number, message: string, kind: "normal" | "success" | "error" = "normal") {
   const bounded = Math.max(0, Math.min(100, Math.round(percent)));
@@ -130,6 +136,7 @@ function syncForm() {
   removeOriginalAudio.disabled = isProcessing;
   clearAddedAudioButton.disabled = isProcessing || !addedAudioPath;
   loopAddedAudio.disabled = isProcessing || !addedAudioPath;
+  metadataEditor.setDisabled(isProcessing);
 
   for (const button of document.querySelectorAll<HTMLButtonElement>("button.secondary, button.text-button")) {
     button.disabled = isProcessing;
@@ -369,6 +376,7 @@ function showPreview(result: VideoResult) {
   previewFileName.textContent = result.outputPath;
   videoDuration.textContent = formatTime(result.durationSeconds);
   videoDimensions.textContent = `${result.width} × ${result.height}（${analyzedRatio(result)}）`;
+  metadataEditor.populate(result.metadata, result.outputPath, currentAppVersion);
   const recommendedRatio: OutputAspectRatio = result.height > result.width ? "9:16" : "16:9";
   const ratioInput = document.querySelector<HTMLInputElement>(`input[name="outputAspect"][value="${recommendedRatio}"]`);
   if (ratioInput) ratioInput.checked = true;
@@ -684,6 +692,7 @@ trimButton.addEventListener("click", async () => {
         contentMode: selectedContentMode(),
         overlay: selectedOverlay(),
         watermark: selectedWatermark(),
+        metadata: metadataEditor.collect(),
         audioVolume: Number(audioVolume.value),
         removeOriginalAudio: removeOriginalAudio.checked,
         addedAudio: selectedAddedAudio(),
@@ -706,6 +715,7 @@ async function initialize() {
 
   try {
     const version = await getVersion();
+    currentAppVersion = version;
     document.querySelector("#appVersion")!.textContent = `QuickVideoMaker v${version}`;
   } catch {
     document.querySelector("#appVersion")!.textContent = "QuickVideoMaker";
