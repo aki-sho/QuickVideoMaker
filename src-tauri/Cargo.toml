@@ -4,7 +4,7 @@ version = "0.0.0"
 description = "QuickVideoMaker desktop application"
 authors = ["QuickVideoMaker contributors"]
 edition = "2021"
-rust-version = "1.77.2"
+rust-version = "1.88.0"
 
 [lib]
 name = "quick_video_maker_lib"
@@ -18,6 +18,7 @@ path = "src/main.rs"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+c2pa = { version = "0.90.16", default-features = false, features = ["file_io", "rust_native_crypto"] }
 regex = "1.11"
 rfd = "0.15"
 serde = { version = "1", features = ["derive"] }

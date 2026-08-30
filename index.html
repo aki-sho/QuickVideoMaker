@@ -318,7 +318,16 @@
                   <p>再エンコードや再生状態に影響するため、この画面では変更しません。</p>
                 </div>
                 <dl id="metadataReadonlyList" class="metadata-readonly-list"></dl>
-                <p class="metadata-c2pa-note">C2PAは通常タグのように変更せず、FFmpegが確認できた存在・内容のみを表示します。</p>
+                <details id="c2paDetailsPanel" class="c2pa-details-panel">
+                  <summary>
+                    <span><strong>生成元を示す証明情報</strong><small>C2PA / Content Credentials（確認専用）</small></span>
+                    <span id="c2paSummaryStatus" class="c2pa-summary-status" data-kind="pending">開いて検証</span>
+                  </summary>
+                  <div class="c2pa-details-body">
+                    <p class="metadata-c2pa-note">公式C2PA SDKを使い、この動画内のManifestをローカルで検証します。動画を外部へ送信しません。発行元の信頼性は信頼リストの有無により未確認になる場合があります。</p>
+                    <dl id="c2paDetailsList" class="metadata-readonly-list c2pa-details-list"></dl>
+                  </div>
+                </details>
               </section>
               <section class="metadata-group" aria-labelledby="metadata-editable-heading">
                 <div class="metadata-group-heading">

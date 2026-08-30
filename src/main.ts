@@ -3,7 +3,7 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
 import { calculateWatermarkBox, calculateWatermarkPoints, initialWatermarkSpacing } from "./watermark-layout";
-import { MetadataEditor, type VideoMetadata } from "./metadata-editor";
+import { MetadataEditor, type C2paDetails, type VideoMetadata } from "./metadata-editor";
 
 type Paths = {
   music: string;
@@ -46,6 +46,9 @@ let addedAudioPath = "";
 let watermarkImagePath = "";
 let watermarkPreviewUrl = "";
 let currentAppVersion = "";
+let c2paInspectedPath = "";
+let c2paInspectingPath = "";
+let c2paInspectionToken = 0;
 
 const musicInput = document.querySelector<HTMLInputElement>("#musicPath")!;
 const imageInput = document.querySelector<HTMLInputElement>("#imagePath")!;
@@ -103,7 +106,15 @@ const clearAddedAudioButton = document.querySelector<HTMLButtonElement>("#clearA
 const loopAddedAudio = document.querySelector<HTMLInputElement>("#loopAddedAudio")!;
 const metadataReadonlyList = document.querySelector<HTMLElement>("#metadataReadonlyList")!;
 const metadataEditableFields = document.querySelector<HTMLElement>("#metadataEditableFields")!;
-const metadataEditor = new MetadataEditor(metadataReadonlyList, metadataEditableFields);
+const c2paDetailsPanel = document.querySelector<HTMLDetailsElement>("#c2paDetailsPanel")!;
+const c2paDetailsList = document.querySelector<HTMLElement>("#c2paDetailsList")!;
+const c2paSummaryStatus = document.querySelector<HTMLElement>("#c2paSummaryStatus")!;
+const metadataEditor = new MetadataEditor(
+  metadataReadonlyList,
+  metadataEditableFields,
+  c2paDetailsList,
+  c2paSummaryStatus,
+);
 
 function setProgress(percent: number, message: string, kind: "normal" | "success" | "error" = "normal") {
   const bounded = Math.max(0, Math.min(100, Math.round(percent)));
@@ -371,8 +382,34 @@ function selectedAddedAudio() {
   };
 }
 
+async function inspectCurrentC2pa() {
+  if (!currentVideo) return;
+  const inspectedPath = currentVideo.outputPath;
+  if (c2paInspectedPath === inspectedPath || c2paInspectingPath === inspectedPath) return;
+
+  const token = ++c2paInspectionToken;
+  c2paInspectingPath = inspectedPath;
+  metadataEditor.setC2paLoading();
+  try {
+    const details = await invoke<C2paDetails>("inspect_c2pa");
+    if (token !== c2paInspectionToken || currentVideo?.outputPath !== inspectedPath) return;
+    c2paInspectedPath = inspectedPath;
+    metadataEditor.populateC2pa(details);
+  } catch (error) {
+    if (token !== c2paInspectionToken || currentVideo?.outputPath !== inspectedPath) return;
+    metadataEditor.setC2paError(String(error));
+  } finally {
+    if (token === c2paInspectionToken) c2paInspectingPath = "";
+  }
+}
+
 function showPreview(result: VideoResult) {
   currentVideo = result;
+  c2paInspectionToken += 1;
+  c2paInspectedPath = "";
+  c2paInspectingPath = "";
+  c2paDetailsPanel.open = false;
+  metadataEditor.resetC2pa();
   overlayImagePath = "";
   addedAudioPath = "";
   removeOriginalAudio.checked = false;
@@ -724,6 +761,10 @@ trimButton.addEventListener("click", async () => {
     isProcessing = false;
     syncForm();
   }
+});
+
+c2paDetailsPanel.addEventListener("toggle", () => {
+  if (c2paDetailsPanel.open) void inspectCurrentC2pa();
 });
 
 async function initialize() {

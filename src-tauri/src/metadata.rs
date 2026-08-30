@@ -19,7 +19,6 @@ pub struct TechnicalMetadata {
     pub transfer_characteristics: String,
     pub rotation_orientation: String,
     pub timecode: String,
-    pub c2pa: String,
     pub encoder_version: String,
 }
 
@@ -88,16 +87,6 @@ pub fn inspect(
         .or_else(|| parse_detail_tag(details, "timecode"))
         .unwrap_or_default();
     let encoder_versions = parse_encoder_versions(details);
-    let c2pa_values = tags
-        .iter()
-        .filter(|(key, _)| key.to_ascii_lowercase().contains("c2pa"))
-        .map(|(key, value)| format!("{key}={value}"))
-        .collect::<Vec<_>>();
-    let c2pa = if c2pa_values.is_empty() {
-        "FFmpegでは検出されませんでした".to_string()
-    } else {
-        c2pa_values.join(" / ")
-    };
 
     let editable = editable_from_tags(&tags, details, &encoder_versions);
     VideoMetadata {
@@ -111,7 +100,6 @@ pub fn inspect(
             transfer_characteristics,
             rotation_orientation: format!("{rotation:.0}° / {orientation}"),
             timecode,
-            c2pa,
             encoder_version: encoder_versions,
         },
         editable,

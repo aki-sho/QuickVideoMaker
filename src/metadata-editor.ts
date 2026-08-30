@@ -8,8 +8,21 @@ export type TechnicalMetadata = {
   transferCharacteristics: string;
   rotationOrientation: string;
   timecode: string;
-  c2pa: string;
   encoderVersion: string;
+};
+
+export type C2paDetails = {
+  validationResult: string;
+  generator: string;
+  softwareVersion: string;
+  signerIssuer: string;
+  signedAt: string;
+  actionsHistory: string;
+  aiDisclosure: string;
+  manifestId: string;
+  specificationVersion: string;
+  ingredients: string;
+  validationMessages: string;
 };
 
 export type EditableMetadata = {
@@ -51,6 +64,7 @@ export type VideoMetadata = {
 };
 
 type TechnicalKey = keyof TechnicalMetadata;
+type C2paKey = keyof C2paDetails;
 type EditableKey = keyof EditableMetadata;
 
 type EditableField = {
@@ -70,7 +84,20 @@ const technicalFields: Array<[TechnicalKey, string]> = [
   ["transferCharacteristics", "Transfer Characteristics：HDR・SDR"],
   ["rotationOrientation", "Rotation / Orientation：動画の向き"],
   ["timecode", "Timecode：編集用タイムコード"],
-  ["c2pa", "C2PA：制作元・編集履歴・AI生成情報"],
+];
+
+const c2paFields: Array<[C2paKey, string]> = [
+  ["validationResult", "1. 検証結果"],
+  ["generator", "2. 生成したソフト・機器名"],
+  ["softwareVersion", "3. ソフトのバージョン"],
+  ["signerIssuer", "4. 署名者・証明書の発行元"],
+  ["signedAt", "5. 署名日時・タイムスタンプ"],
+  ["actionsHistory", "6. 作成・編集履歴"],
+  ["aiDisclosure", "7. AI生成・AI編集の申告"],
+  ["manifestId", "8. Manifest ID"],
+  ["specificationVersion", "9. C2PA仕様バージョン"],
+  ["ingredients", "10. 元素材・入力元"],
+  ["validationMessages", "11. 検証時の警告・エラー"],
 ];
 
 const editableFields: EditableField[] = [
@@ -120,9 +147,13 @@ export class MetadataEditor {
   constructor(
     private readonly technicalContainer: HTMLElement,
     private readonly editableContainer: HTMLElement,
+    private readonly c2paContainer: HTMLElement,
+    private readonly c2paStatus: HTMLElement,
   ) {
     this.createTechnicalFields();
     this.createEditableFields();
+    this.createC2paFields();
+    this.resetC2pa();
   }
 
   populate(metadata: VideoMetadata, outputPath: string, appVersion: string) {
@@ -141,6 +172,52 @@ export class MetadataEditor {
     if (!values.exportPreset) values.exportPreset = "H.264 / AAC MP4";
     if (!values.encoderVersion) values.encoderVersion = metadata.technical.encoderVersion;
     for (const [key, input] of this.inputs) input.value = values[key] || "";
+  }
+
+  resetC2pa() {
+    this.c2paContainer.querySelectorAll<HTMLElement>("[data-metadata-c2pa]").forEach((element) => {
+      element.textContent = "未検証";
+    });
+    this.c2paStatus.textContent = "開いて検証";
+    this.c2paStatus.dataset.kind = "pending";
+  }
+
+  setC2paLoading() {
+    this.c2paContainer.querySelectorAll<HTMLElement>("[data-metadata-c2pa]").forEach((element) => {
+      element.textContent = "検証中…";
+    });
+    this.c2paStatus.textContent = "検証中…";
+    this.c2paStatus.dataset.kind = "loading";
+  }
+
+  populateC2pa(details: C2paDetails) {
+    this.c2paContainer.querySelectorAll<HTMLElement>("[data-metadata-c2pa]").forEach((element) => {
+      const key = element.dataset.metadataC2pa as C2paKey;
+      element.textContent = details[key] || "―";
+    });
+    const result = details.validationResult;
+    if (result.startsWith("信頼済み")) {
+      this.c2paStatus.textContent = "信頼済み";
+      this.c2paStatus.dataset.kind = "success";
+    } else if (result.startsWith("有効")) {
+      this.c2paStatus.textContent = "有効";
+      this.c2paStatus.dataset.kind = "success";
+    } else if (result === "証明情報なし") {
+      this.c2paStatus.textContent = "証明情報なし";
+      this.c2paStatus.dataset.kind = "none";
+    } else {
+      this.c2paStatus.textContent = "要確認";
+      this.c2paStatus.dataset.kind = "error";
+    }
+  }
+
+  setC2paError(message: string) {
+    this.c2paContainer.querySelectorAll<HTMLElement>("[data-metadata-c2pa]").forEach((element) => {
+      const key = element.dataset.metadataC2pa as C2paKey;
+      element.textContent = key === "validationMessages" ? message : "確認できません";
+    });
+    this.c2paStatus.textContent = "検証エラー";
+    this.c2paStatus.dataset.kind = "error";
   }
 
   collect(): EditableMetadata {
@@ -167,6 +244,22 @@ export class MetadataEditor {
       fragment.append(row);
     }
     this.technicalContainer.replaceChildren(fragment);
+  }
+
+  private createC2paFields() {
+    const fragment = document.createDocumentFragment();
+    for (const [key, label] of c2paFields) {
+      const row = document.createElement("div");
+      row.className = "metadata-readonly-row c2pa-readonly-row";
+      const term = document.createElement("dt");
+      term.textContent = label;
+      const value = document.createElement("dd");
+      value.dataset.metadataC2pa = key;
+      value.textContent = "未検証";
+      row.append(term, value);
+      fragment.append(row);
+    }
+    this.c2paContainer.replaceChildren(fragment);
   }
 
   private createEditableFields() {

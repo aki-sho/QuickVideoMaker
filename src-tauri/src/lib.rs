@@ -1,3 +1,4 @@
+mod c2pa_metadata;
 mod dialogs;
 mod metadata;
 mod portable;
@@ -130,6 +131,21 @@ fn load_image_preview(image_path: String) -> Result<ImagePreviewData, String> {
     })
 }
 
+#[tauri::command]
+async fn inspect_c2pa(
+    state: tauri::State<'_, AppState>,
+) -> Result<c2pa_metadata::C2paDetails, String> {
+    let input = state
+        .source_video
+        .lock()
+        .map_err(|_| "元動画の状態を取得できません".to_string())?
+        .clone()
+        .ok_or_else(|| "先に動画を作成またはインポートしてください。".to_string())?;
+    tauri::async_runtime::spawn_blocking(move || c2pa_metadata::inspect(&input))
+        .await
+        .map_err(|error| format!("証明情報の検証タスクが停止しました: {error}"))
+}
+
 fn set_preview(preview: &preview::PreviewStore, path: &str) -> Result<(), String> {
     let mut value = preview
         .lock()
@@ -180,7 +196,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             import_video,
             trim_video,
             render_video_preview,
-            load_image_preview
+            load_image_preview,
+            inspect_c2pa
         ])
         .build(tauri::generate_context!())?;
 

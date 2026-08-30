@@ -716,6 +716,49 @@ kbd {
 }
 .metadata-readonly-row dt { color: #6b7589; font-size: 9px; line-height: 1.4; }
 .metadata-readonly-row dd { margin: 5px 0 0; overflow-wrap: anywhere; color: #26334e; font-size: 11px; font-weight: 700; }
+.c2pa-details-panel {
+  margin-top: 12px;
+  overflow: hidden;
+  border: 1px solid #cfd6e6;
+  border-radius: 9px;
+  background: white;
+}
+.c2pa-details-panel > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  cursor: pointer;
+  list-style: none;
+}
+.c2pa-details-panel > summary::-webkit-details-marker { display: none; }
+.c2pa-details-panel > summary > span:first-child { display: flex; flex-direction: column; gap: 3px; }
+.c2pa-details-panel > summary strong { color: #2d3952; font-size: 12px; }
+.c2pa-details-panel > summary small { color: #7b8598; font-size: 9px; font-weight: 400; }
+.c2pa-details-panel[open] > summary { border-bottom: 1px solid #e0e5ee; }
+.c2pa-summary-status {
+  flex: 0 0 auto;
+  padding: 5px 9px;
+  border-radius: 99px;
+  color: #5548c2;
+  background: #efedff;
+  font-size: 9px;
+  font-weight: 750;
+}
+.c2pa-summary-status[data-kind="loading"] { color: #3e5f9e; background: #e8f0ff; }
+.c2pa-summary-status[data-kind="success"] { color: #14714a; background: #e3f7ed; }
+.c2pa-summary-status[data-kind="none"] { color: #687184; background: #edf0f5; }
+.c2pa-summary-status[data-kind="error"] { color: #a83242; background: #ffeaed; }
+.c2pa-details-body { padding: 0 12px 12px; }
+.c2pa-details-list { margin-top: 10px; }
+.c2pa-details-list .metadata-readonly-row:nth-child(6),
+.c2pa-details-list .metadata-readonly-row:nth-child(7),
+.c2pa-details-list .metadata-readonly-row:nth-child(8),
+.c2pa-details-list .metadata-readonly-row:nth-child(10),
+.c2pa-details-list .metadata-readonly-row:nth-child(11) { grid-column: 1 / -1; }
+.c2pa-readonly-row dd { white-space: pre-wrap; }
+
 .metadata-c2pa-note,
 .metadata-edit-note { margin: 9px 0 0; color: #878fa0; font-size: 9px; line-height: 1.5; }
 .metadata-editable-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 12px; }
