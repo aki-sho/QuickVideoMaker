@@ -61,6 +61,8 @@ pub struct TrimVideoRequest {
     content_mode: ContentMode,
     overlay: Option<OverlaySettings>,
     audio_volume: u8,
+    remove_original_audio: bool,
+    added_audio: Option<AddedAudioSettings>,
 }
 
 #[derive(Deserialize)]
@@ -72,6 +74,20 @@ pub struct PreviewVideoRequest {
     content_mode: ContentMode,
     overlay: Option<OverlaySettings>,
     audio_volume: u8,
+    remove_original_audio: bool,
+    added_audio: Option<AddedAudioSettings>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AddedAudioSettings {
+    audio_path: String,
+    loop_audio: bool,
+}
+
+struct ValidatedAddedAudio {
+    audio_path: PathBuf,
+    loop_audio: bool,
 }
 
 #[derive(Deserialize)]
@@ -545,6 +561,8 @@ fn render_preview_with_progress(
         source.duration_seconds,
     )?;
     validate_audio_volume(request.audio_volume)?;
+    let source_has_audio = has_audio_stream(&paths, &input)?;
+    let added_audio = validate_added_audio(&paths, request.added_audio)?;
 
     let preview_duration = (request.end_seconds - request.start_seconds).min(10.0);
     let (output_width, output_height) = request.aspect_ratio.preview_dimensions();
@@ -584,6 +602,8 @@ fn render_preview_with_progress(
         .arg("-i")
         .arg(&input);
     add_overlay_input(&mut command, overlay.as_ref());
+    add_added_audio_input(&mut command, added_audio.as_ref());
+    let added_audio_input_index = if overlay.is_some() { 2 } else { 1 };
     command.arg("-t").arg(format!("{preview_duration:.3}"));
     add_video_filter_and_mapping(
         &mut command,
@@ -592,7 +612,14 @@ fn render_preview_with_progress(
         output_height,
         overlay.as_ref(),
     );
-    add_audio_volume_filter(&mut command, request.audio_volume);
+    add_audio_mapping(
+        &mut command,
+        source_has_audio,
+        request.remove_original_audio,
+        request.audio_volume,
+        added_audio.as_ref(),
+        added_audio_input_index,
+    );
     command
         .arg("-c:v")
         .arg("libx264")
@@ -668,6 +695,8 @@ fn trim_with_progress(
         source.duration_seconds,
     )?;
     validate_audio_volume(request.audio_volume)?;
+    let source_has_audio = has_audio_stream(&paths, &input)?;
+    let added_audio = validate_added_audio(&paths, request.added_audio)?;
 
     let output = validate_trim_output(&request.output_path, &input)?;
     let ffmpeg = paths.ffmpeg_path()?;
@@ -699,6 +728,8 @@ fn trim_with_progress(
         .arg("-i")
         .arg(&input);
     add_overlay_input(&mut command, overlay.as_ref());
+    add_added_audio_input(&mut command, added_audio.as_ref());
+    let added_audio_input_index = if overlay.is_some() { 2 } else { 1 };
     command.arg("-t").arg(format!("{trim_duration:.3}"));
     add_video_filter_and_mapping(
         &mut command,
@@ -707,7 +738,14 @@ fn trim_with_progress(
         output_height,
         overlay.as_ref(),
     );
-    add_audio_volume_filter(&mut command, request.audio_volume);
+    add_audio_mapping(
+        &mut command,
+        source_has_audio,
+        request.remove_original_audio,
+        request.audio_volume,
+        added_audio.as_ref(),
+        added_audio_input_index,
+    );
     command
         .arg("-c:v")
         .arg("libx264")
@@ -872,12 +910,92 @@ fn validate_audio_volume(volume: u8) -> Result<(), String> {
     Ok(())
 }
 
-fn add_audio_volume_filter(command: &mut Command, volume: u8) {
-    if volume < 100 {
-        command
-            .arg("-af")
-            .arg(format!("volume={:.2}", f64::from(volume) / 100.0));
+fn validate_added_audio(
+    paths: &PortablePaths,
+    value: Option<AddedAudioSettings>,
+) -> Result<Option<ValidatedAddedAudio>, String> {
+    value
+        .map(|audio| {
+            let audio_path = validate_input(&audio.audio_path, "追加する音声")?;
+            if !has_audio_stream(paths, &audio_path)? {
+                return Err("追加するファイルに音声データがありません。".to_string());
+            }
+            Ok(ValidatedAddedAudio {
+                audio_path,
+                loop_audio: audio.loop_audio,
+            })
+        })
+        .transpose()
+}
+
+fn add_added_audio_input(command: &mut Command, audio: Option<&ValidatedAddedAudio>) {
+    if let Some(audio) = audio {
+        if audio.loop_audio {
+            command.arg("-stream_loop").arg("-1");
+        }
+        command.arg("-i").arg(&audio.audio_path);
     }
+}
+
+fn add_audio_mapping(
+    command: &mut Command,
+    source_has_audio: bool,
+    remove_original_audio: bool,
+    volume: u8,
+    added_audio: Option<&ValidatedAddedAudio>,
+    added_audio_input_index: usize,
+) {
+    let keep_original = source_has_audio && !remove_original_audio;
+    match (keep_original, added_audio.is_some()) {
+        (true, true) => {
+            let original_filter = if volume < 100 {
+                format!(
+                    "[0:a:0]volume={:.2}[original_audio];",
+                    f64::from(volume) / 100.0
+                )
+            } else {
+                "[0:a:0]anull[original_audio];".to_string()
+            };
+            let filter = format!(
+                "{original_filter}[original_audio][{added_audio_input_index}:a:0]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0,alimiter=limit=0.95[outa]"
+            );
+            command
+                .arg("-filter_complex")
+                .arg(filter)
+                .arg("-map")
+                .arg("[outa]");
+        }
+        (true, false) => {
+            command.arg("-map").arg("0:a:0");
+            if volume < 100 {
+                command
+                    .arg("-af")
+                    .arg(format!("volume={:.2}", f64::from(volume) / 100.0));
+            }
+        }
+        (false, true) => {
+            command
+                .arg("-map")
+                .arg(format!("{added_audio_input_index}:a:0"));
+        }
+        (false, false) => {}
+    }
+}
+
+fn has_audio_stream(paths: &PortablePaths, input: &Path) -> Result<bool, String> {
+    let mut command = Command::new(paths.ffmpeg_path()?);
+    command
+        .arg("-hide_banner")
+        .arg("-i")
+        .arg(input)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .stdin(Stdio::null());
+    hide_console_window(&mut command);
+    let output = command
+        .output()
+        .map_err(|error| format!("音声情報を取得できません: {error}"))?;
+    Ok(String::from_utf8_lossy(&output.stderr).contains("Audio:"))
 }
 
 fn validate_overlay(value: Option<OverlaySettings>) -> Result<Option<ValidatedOverlay>, String> {
@@ -932,7 +1050,6 @@ fn add_video_filter_and_mapping(
     } else {
         command.arg("-map").arg("0:v:0").arg("-vf").arg(base_filter);
     }
-    command.arg("-map").arg("0:a:0?");
 }
 
 fn build_overlay_filter(
@@ -1105,10 +1222,11 @@ pub fn stop_active_process(process: &ProcessControl) {
 #[cfg(test)]
 mod tests {
     use super::{
-        compact_error, inspect_video, parse_duration_seconds, parse_video_dimensions,
-        render_preview_with_progress, trim_with_progress, validate_audio_volume, ContentMode,
-        CreateOutputSize, OutputAspectRatio, OverlayBackground, OverlayPosition, OverlayScale,
-        OverlaySettings, PreviewVideoRequest, TrimVideoRequest,
+        compact_error, has_audio_stream, inspect_video, parse_duration_seconds,
+        parse_video_dimensions, render_preview_with_progress, trim_with_progress,
+        validate_audio_volume, AddedAudioSettings, ContentMode, CreateOutputSize,
+        OutputAspectRatio, OverlayBackground, OverlayPosition, OverlayScale, OverlaySettings,
+        PreviewVideoRequest, TrimVideoRequest,
     };
     use crate::{portable::PortablePaths, state::ProcessControl};
     use std::{
@@ -1190,6 +1308,7 @@ mod tests {
         let overlay_image = test_dir.join("overlay.bmp");
         let still_image = test_dir.join("still.bmp");
         let image_sized_video = test_dir.join("image-sized.mp4");
+        let added_audio = test_dir.join("added.wav");
         let ffmpeg = paths.ffmpeg_path().expect("embedded ffmpeg");
 
         let status = Command::new(&ffmpeg)
@@ -1281,10 +1400,50 @@ mod tests {
             .expect("inspect image-sized video");
         assert_eq!((image_sized.width, image_sized.height), (322, 242));
 
+        let added_audio_status = Command::new(&ffmpeg)
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=660:duration=0.4",
+                "-c:a",
+                "pcm_s16le",
+            ])
+            .arg(&added_audio)
+            .status()
+            .expect("create added audio");
+        assert!(added_audio_status.success());
+
         let imported =
             inspect_video(&paths, &source.to_string_lossy()).expect("inspect imported video");
         assert!((2.9..=3.1).contains(&imported.duration_seconds));
         assert_eq!((imported.width, imported.height), (320, 240));
+
+        let silent_preview = render_preview_with_progress(
+            paths.clone(),
+            Arc::new(ProcessControl::default()),
+            source.clone(),
+            PreviewVideoRequest {
+                start_seconds: 0.25,
+                end_seconds: 3.0,
+                aspect_ratio: OutputAspectRatio::Portrait,
+                content_mode: ContentMode::Cover,
+                overlay: None,
+                audio_volume: 100,
+                remove_original_audio: true,
+                added_audio: None,
+            },
+            Arc::new(|_, _| {}),
+        )
+        .expect("render preview without original audio");
+        assert!(
+            !has_audio_stream(&paths, &PathBuf::from(&silent_preview.output_path))
+                .expect("inspect silent preview")
+        );
 
         let preview = render_preview_with_progress(
             paths.clone(),
@@ -1301,14 +1460,23 @@ mod tests {
                     position: OverlayPosition::BottomRight,
                     background: OverlayBackground::Black,
                 }),
-                audio_volume: 40,
+                audio_volume: 100,
+                remove_original_audio: false,
+                added_audio: Some(AddedAudioSettings {
+                    audio_path: added_audio.to_string_lossy().into_owned(),
+                    loop_audio: true,
+                }),
             },
             Arc::new(|_, _| {}),
         )
-        .expect("render preview");
+        .expect("render preview with looped replacement audio");
         assert!((2.6..=2.9).contains(&preview.duration_seconds));
         assert_eq!((preview.width, preview.height), (360, 640));
         assert!(PathBuf::from(&preview.output_path).is_file());
+        assert!(
+            has_audio_stream(&paths, &PathBuf::from(&preview.output_path))
+                .expect("inspect replacement audio")
+        );
 
         let result = trim_with_progress(
             paths.clone(),
@@ -1327,6 +1495,8 @@ mod tests {
                     background: OverlayBackground::Black,
                 }),
                 audio_volume: 40,
+                remove_original_audio: false,
+                added_audio: None,
             },
             Arc::new(|_, _| {}),
         )

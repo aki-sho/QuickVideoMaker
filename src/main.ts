@@ -34,6 +34,7 @@ let currentVideo: VideoResult | null = null;
 let isShowingTransformPreview = false;
 let displayedPreviewOffset = 0;
 let overlayImagePath = "";
+let addedAudioPath = "";
 
 const musicInput = document.querySelector<HTMLInputElement>("#musicPath")!;
 const imageInput = document.querySelector<HTMLInputElement>("#imagePath")!;
@@ -61,6 +62,11 @@ const overlayPosition = document.querySelector<HTMLSelectElement>("#overlayPosit
 const overlayBackground = document.querySelector<HTMLSelectElement>("#overlayBackground")!;
 const audioVolume = document.querySelector<HTMLInputElement>("#audioVolume")!;
 const audioVolumeValue = document.querySelector<HTMLOutputElement>("#audioVolumeValue")!;
+const removeOriginalAudio = document.querySelector<HTMLInputElement>("#removeOriginalAudio")!;
+const addedAudioInput = document.querySelector<HTMLInputElement>("#addedAudioPath")!;
+const selectAddedAudioButton = document.querySelector<HTMLButtonElement>("#selectAddedAudio")!;
+const clearAddedAudioButton = document.querySelector<HTMLButtonElement>("#clearAddedAudio")!;
+const loopAddedAudio = document.querySelector<HTMLInputElement>("#loopAddedAudio")!;
 
 function setProgress(percent: number, message: string, kind: "normal" | "success" | "error" = "normal") {
   const bounded = Math.max(0, Math.min(100, Math.round(percent)));
@@ -76,6 +82,7 @@ function syncForm() {
   imageInput.value = paths.image;
   outputInput.value = paths.output;
   overlayImageInput.value = overlayImagePath;
+  addedAudioInput.value = addedAudioPath;
   createButton.disabled = isProcessing || !paths.music || !paths.image || !paths.output;
   trimButton.disabled = isProcessing || !currentVideo || !isTrimRangeValid();
   previewTransformButton.disabled = isProcessing || !currentVideo || !isTrimRangeValid();
@@ -83,7 +90,10 @@ function syncForm() {
   overlayScale.disabled = isProcessing || !overlayImagePath;
   overlayPosition.disabled = isProcessing || !overlayImagePath;
   overlayBackground.disabled = isProcessing || !overlayImagePath;
-  audioVolume.disabled = isProcessing;
+  audioVolume.disabled = isProcessing || removeOriginalAudio.checked;
+  removeOriginalAudio.disabled = isProcessing;
+  clearAddedAudioButton.disabled = isProcessing || !addedAudioPath;
+  loopAddedAudio.disabled = isProcessing || !addedAudioPath;
 
   for (const button of document.querySelectorAll<HTMLButtonElement>("button.secondary, button.text-button")) {
     button.disabled = isProcessing;
@@ -172,9 +182,20 @@ function selectedOverlay() {
   };
 }
 
+function selectedAddedAudio() {
+  if (!addedAudioPath) return null;
+  return {
+    audioPath: addedAudioPath,
+    loopAudio: loopAddedAudio.checked,
+  };
+}
+
 function showPreview(result: VideoResult) {
   currentVideo = result;
   overlayImagePath = "";
+  addedAudioPath = "";
+  removeOriginalAudio.checked = false;
+  loopAddedAudio.checked = true;
   audioVolume.value = "100";
   audioVolumeValue.value = "100";
   isShowingTransformPreview = false;
@@ -285,6 +306,31 @@ audioVolume.addEventListener("input", () => {
   audioVolumeValue.value = audioVolume.value;
   markTransformPreviewOutdated();
 });
+removeOriginalAudio.addEventListener("change", () => {
+  markTransformPreviewOutdated();
+  syncForm();
+});
+loopAddedAudio.addEventListener("change", markTransformPreviewOutdated);
+
+selectAddedAudioButton.addEventListener("click", async () => {
+  try {
+    const selected = await invoke<string | null>("select_music_file");
+    if (!selected) return;
+    addedAudioPath = selected;
+    markTransformPreviewOutdated();
+    syncForm();
+    setProgress(0, "追加する音声を選択しました。動画の先頭から再生されます。");
+  } catch (error) {
+    setProgress(0, `音声を選択できませんでした: ${String(error)}`, "error");
+  }
+});
+
+clearAddedAudioButton.addEventListener("click", () => {
+  addedAudioPath = "";
+  markTransformPreviewOutdated();
+  syncForm();
+  setProgress(0, "追加する音声を解除しました。");
+});
 
 selectOverlayImageButton.addEventListener("click", async () => {
   try {
@@ -348,6 +394,8 @@ previewTransformButton.addEventListener("click", async () => {
         contentMode: selectedContentMode(),
         overlay: selectedOverlay(),
         audioVolume: Number(audioVolume.value),
+        removeOriginalAudio: removeOriginalAudio.checked,
+        addedAudio: selectedAddedAudio(),
       },
     });
     showTransformPreview(result);
@@ -386,6 +434,8 @@ trimButton.addEventListener("click", async () => {
         contentMode: selectedContentMode(),
         overlay: selectedOverlay(),
         audioVolume: Number(audioVolume.value),
+        removeOriginalAudio: removeOriginalAudio.checked,
+        addedAudio: selectedAddedAudio(),
       },
     });
     showPreview(result);

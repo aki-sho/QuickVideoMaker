@@ -225,6 +225,30 @@
               <output id="audioVolumeValue" for="audioVolume">100</output>
             </div>
             <div class="audio-scale"><span>0（無音）</span><span>100（元の音量）</span></div>
+
+            <div class="audio-subsection">
+              <label class="audio-toggle" for="removeOriginalAudio">
+                <input id="removeOriginalAudio" type="checkbox" />
+                <span><strong>元の音声データを削除</strong><small>音量0ではなく、元音声トラック自体を出力から外します。</small></span>
+              </label>
+            </div>
+
+            <div class="audio-subsection">
+              <div class="audio-subheading">
+                <strong>新しい音声を追加</strong>
+                <small>動画の最初から再生します。元音声を残す場合はミックスされます。</small>
+              </div>
+              <div class="audio-file-row">
+                <input id="addedAudioPath" type="text" readonly placeholder="MP3、WAVなどを選択してください" />
+                <button id="selectAddedAudio" class="secondary" type="button">音声を選択</button>
+                <button id="clearAddedAudio" class="audio-clear" type="button">解除</button>
+              </div>
+              <label class="loop-toggle" for="loopAddedAudio">
+                <input id="loopAddedAudio" type="checkbox" checked />
+                <span>動画の最後まで音声をループする</span>
+              </label>
+              <p class="audio-note">ループOFFでは追加音声が終わった後も、動画は指定時間まで続きます。長い音声は動画終了位置でカットされます。</p>
+            </div>
           </section>
           <div class="transform-actions">
             <button id="previewTransform" class="preview-action" type="button">
