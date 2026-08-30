@@ -2,6 +2,7 @@ import "./styles.css";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
+import { calculateWatermarkBox, calculateWatermarkPoints, initialWatermarkSpacing } from "./watermark-layout";
 
 type Paths = {
   music: string;
@@ -21,6 +22,11 @@ type VideoResult = {
   height: number;
 };
 
+type ImagePreviewData = {
+  bytes: number[];
+  mimeType: string;
+};
+
 type OutputAspectRatio = "16:9" | "9:16";
 type CreateOutputSize = "landscape" | "portrait" | "image";
 type ContentMode = "contain" | "cover";
@@ -35,6 +41,8 @@ let isShowingTransformPreview = false;
 let displayedPreviewOffset = 0;
 let overlayImagePath = "";
 let addedAudioPath = "";
+let watermarkImagePath = "";
+let watermarkPreviewUrl = "";
 
 const musicInput = document.querySelector<HTMLInputElement>("#musicPath")!;
 const imageInput = document.querySelector<HTMLInputElement>("#imagePath")!;
@@ -46,6 +54,9 @@ const progressText = document.querySelector<HTMLSpanElement>("#progressText")!;
 const statusMessage = document.querySelector<HTMLParagraphElement>("#statusMessage")!;
 const previewSection = document.querySelector<HTMLElement>("#previewSection")!;
 const previewVideo = document.querySelector<HTMLVideoElement>("#videoPreview")!;
+const videoStage = document.querySelector<HTMLElement>("#videoStage")!;
+const watermarkPreviewLayer = document.querySelector<HTMLDivElement>("#watermarkPreviewLayer")!;
+const watermarkLiveBadge = document.querySelector<HTMLElement>("#watermarkLiveBadge")!;
 const previewFileName = document.querySelector<HTMLParagraphElement>("#previewFileName")!;
 const videoDuration = document.querySelector<HTMLSpanElement>("#videoDuration")!;
 const videoDimensions = document.querySelector<HTMLElement>("#videoDimensions")!;
@@ -60,6 +71,26 @@ const clearOverlayImageButton = document.querySelector<HTMLButtonElement>("#clea
 const overlayScale = document.querySelector<HTMLSelectElement>("#overlayScale")!;
 const overlayPosition = document.querySelector<HTMLSelectElement>("#overlayPosition")!;
 const overlayBackground = document.querySelector<HTMLSelectElement>("#overlayBackground")!;
+const watermarkImageInput = document.querySelector<HTMLInputElement>("#watermarkImagePath")!;
+const selectWatermarkImageButton = document.querySelector<HTMLButtonElement>("#selectWatermarkImage")!;
+const clearWatermarkImageButton = document.querySelector<HTMLButtonElement>("#clearWatermarkImage")!;
+const watermarkScale = document.querySelector<HTMLSelectElement>("#watermarkScale")!;
+const watermarkPosition = document.querySelector<HTMLSelectElement>("#watermarkPosition")!;
+const watermarkX = document.querySelector<HTMLInputElement>("#watermarkX")!;
+const watermarkY = document.querySelector<HTMLInputElement>("#watermarkY")!;
+const watermarkOpacity = document.querySelector<HTMLInputElement>("#watermarkOpacity")!;
+const watermarkSpacing = document.querySelector<HTMLInputElement>("#watermarkSpacing")!;
+const watermarkAngle = document.querySelector<HTMLInputElement>("#watermarkAngle")!;
+const watermarkCount = document.querySelector<HTMLInputElement>("#watermarkCount")!;
+const watermarkXValue = document.querySelector<HTMLOutputElement>("#watermarkXValue")!;
+const watermarkYValue = document.querySelector<HTMLOutputElement>("#watermarkYValue")!;
+const watermarkOpacityValue = document.querySelector<HTMLOutputElement>("#watermarkOpacityValue")!;
+const watermarkSpacingValue = document.querySelector<HTMLOutputElement>("#watermarkSpacingValue")!;
+const watermarkAngleValue = document.querySelector<HTMLOutputElement>("#watermarkAngleValue")!;
+const watermarkCountValue = document.querySelector<HTMLOutputElement>("#watermarkCountValue")!;
+const watermarkPositionControls = document.querySelector<HTMLElement>("#watermarkPositionControls")!;
+const watermarkOpacityControls = document.querySelector<HTMLElement>("#watermarkOpacityControls")!;
+const watermarkSpacingGuide = document.querySelector<HTMLElement>("#watermarkSpacingGuide")!;
 const audioVolume = document.querySelector<HTMLInputElement>("#audioVolume")!;
 const audioVolumeValue = document.querySelector<HTMLOutputElement>("#audioVolumeValue")!;
 const removeOriginalAudio = document.querySelector<HTMLInputElement>("#removeOriginalAudio")!;
@@ -82,6 +113,7 @@ function syncForm() {
   imageInput.value = paths.image;
   outputInput.value = paths.output;
   overlayImageInput.value = overlayImagePath;
+  watermarkImageInput.value = watermarkImagePath;
   addedAudioInput.value = addedAudioPath;
   createButton.disabled = isProcessing || !paths.music || !paths.image || !paths.output;
   trimButton.disabled = isProcessing || !currentVideo || !isTrimRangeValid();
@@ -90,6 +122,10 @@ function syncForm() {
   overlayScale.disabled = isProcessing || !overlayImagePath;
   overlayPosition.disabled = isProcessing || !overlayImagePath;
   overlayBackground.disabled = isProcessing || !overlayImagePath;
+  clearWatermarkImageButton.disabled = isProcessing || !watermarkImagePath;
+  for (const control of [watermarkScale, watermarkPosition, watermarkX, watermarkY, watermarkOpacity, watermarkSpacing, watermarkAngle, watermarkCount]) {
+    control.disabled = isProcessing || !watermarkImagePath;
+  }
   audioVolume.disabled = isProcessing || removeOriginalAudio.checked;
   removeOriginalAudio.disabled = isProcessing;
   clearAddedAudioButton.disabled = isProcessing || !addedAudioPath;
@@ -182,6 +218,135 @@ function selectedOverlay() {
   };
 }
 
+function selectedOutputDimensions() {
+  return selectedAspectRatio() === "9:16" ? { width: 1080, height: 1920 } : { width: 1920, height: 1080 };
+}
+
+function watermarkBox() {
+  return calculateWatermarkBox(selectedOutputDimensions(), watermarkScale.value as OverlayScale);
+}
+
+function setWatermarkCoordinate(input: HTMLInputElement, value: number) {
+  const bounded = Math.max(Number(input.min), Math.min(Number(input.max), Math.round(value)));
+  input.value = String(bounded);
+}
+
+function updateWatermarkBounds() {
+  const dimensions = selectedOutputDimensions();
+  const box = watermarkBox();
+  watermarkX.max = String(Math.max(0, dimensions.width - box.width));
+  watermarkY.max = String(Math.max(0, dimensions.height - box.height));
+  setWatermarkCoordinate(watermarkX, Number(watermarkX.value));
+  setWatermarkCoordinate(watermarkY, Number(watermarkY.value));
+}
+
+function applyWatermarkPositionPreset() {
+  updateWatermarkBounds();
+  const dimensions = selectedOutputDimensions();
+  const box = watermarkBox();
+  const maxX = Math.max(0, dimensions.width - box.width);
+  const maxY = Math.max(0, dimensions.height - box.height);
+  const marginX = Math.min(maxX, Math.max(8, Math.floor(dimensions.width / 40)));
+  const marginY = Math.min(maxY, Math.max(8, Math.floor(dimensions.height / 40)));
+  const positions: Record<OverlayPosition, [number, number]> = {
+    "top-left": [marginX, marginY],
+    "top-right": [maxX - marginX, marginY],
+    center: [maxX / 2, maxY / 2],
+    "bottom-left": [marginX, maxY - marginY],
+    "bottom-right": [maxX - marginX, maxY - marginY],
+  };
+  const [x, y] = positions[watermarkPosition.value as OverlayPosition];
+  setWatermarkCoordinate(watermarkX, x);
+  setWatermarkCoordinate(watermarkY, y);
+  updateWatermarkPreview();
+}
+
+function watermarkPoints() {
+  return calculateWatermarkPoints({
+    dimensions: selectedOutputDimensions(),
+    box: watermarkBox(),
+    x: Number(watermarkX.value),
+    y: Number(watermarkY.value),
+    spacing: Number(watermarkSpacing.value),
+    count: Number(watermarkCount.value),
+  });
+}
+
+function updateWatermarkOutputs() {
+  watermarkXValue.value = `${watermarkX.value}px`;
+  watermarkYValue.value = `${watermarkY.value}px`;
+  watermarkOpacityValue.value = `${watermarkOpacity.value}%`;
+  watermarkSpacingValue.value = `${watermarkSpacing.value}px`;
+  watermarkAngleValue.value = `${watermarkAngle.value}°`;
+  watermarkCountValue.value = `${watermarkCount.value}個`;
+}
+
+function updateVideoStage() {
+  videoStage.dataset.aspect = selectedAspectRatio();
+  previewVideo.style.objectFit = selectedContentMode();
+  updateWatermarkBounds();
+}
+
+function updateWatermarkPreview() {
+  updateVideoStage();
+  updateWatermarkOutputs();
+  watermarkPreviewLayer.replaceChildren();
+  const enabled = Boolean(watermarkImagePath && watermarkPreviewUrl);
+  watermarkLiveBadge.hidden = !enabled;
+  if (!enabled) return;
+
+  const dimensions = selectedOutputDimensions();
+  const box = watermarkBox();
+  for (const point of watermarkPoints()) {
+    const item = document.createElement("span");
+    item.className = "watermark-preview-item";
+    item.style.left = `${point.x / dimensions.width * 100}%`;
+    item.style.top = `${point.y / dimensions.height * 100}%`;
+    item.style.width = `${box.width / dimensions.width * 100}%`;
+    item.style.height = `${box.height / dimensions.height * 100}%`;
+    item.style.opacity = String(Number(watermarkOpacity.value) / 100);
+    item.style.transform = `rotate(${watermarkAngle.value}deg)`;
+    const image = document.createElement("img");
+    image.src = watermarkPreviewUrl;
+    image.alt = "";
+    item.append(image);
+    watermarkPreviewLayer.append(item);
+  }
+}
+
+function releaseWatermarkPreviewUrl() {
+  if (watermarkPreviewUrl) URL.revokeObjectURL(watermarkPreviewUrl);
+  watermarkPreviewUrl = "";
+}
+
+function resetWatermarkSettings(result: VideoResult) {
+  releaseWatermarkPreviewUrl();
+  watermarkImagePath = "";
+  watermarkScale.value = "small";
+  watermarkPosition.value = "bottom-right";
+  watermarkOpacity.value = "50";
+  watermarkAngle.value = "15";
+  watermarkCount.value = "10";
+  const spacing = initialWatermarkSpacing(result.width);
+  watermarkSpacing.value = String(spacing);
+  watermarkSpacingGuide.textContent = `元動画の横幅${result.width}pxから、間隔の初期値を${spacing}pxに設定しました。`;
+  applyWatermarkPositionPreset();
+}
+
+function selectedWatermark() {
+  if (!watermarkImagePath) return null;
+  return {
+    imagePath: watermarkImagePath,
+    scale: watermarkScale.value as OverlayScale,
+    position: watermarkPosition.value as OverlayPosition,
+    x: Number(watermarkX.value),
+    y: Number(watermarkY.value),
+    opacity: Number(watermarkOpacity.value),
+    spacing: Number(watermarkSpacing.value),
+    angle: Number(watermarkAngle.value),
+    count: Number(watermarkCount.value),
+  };
+}
 function selectedAddedAudio() {
   if (!addedAudioPath) return null;
   return {
@@ -207,6 +372,7 @@ function showPreview(result: VideoResult) {
   const recommendedRatio: OutputAspectRatio = result.height > result.width ? "9:16" : "16:9";
   const ratioInput = document.querySelector<HTMLInputElement>(`input[name="outputAspect"][value="${recommendedRatio}"]`);
   if (ratioInput) ratioInput.checked = true;
+  resetWatermarkSettings(result);
   trimStart.value = "0";
   trimStart.max = result.durationSeconds.toFixed(3);
   trimEnd.value = result.durationSeconds.toFixed(1);
@@ -296,8 +462,17 @@ createButton.addEventListener("click", async () => {
 
 trimStart.addEventListener("input", updateTrimSummary);
 trimEnd.addEventListener("input", updateTrimSummary);
-for (const input of document.querySelectorAll<HTMLInputElement>('input[name="outputAspect"], input[name="contentMode"]')) {
-  input.addEventListener("change", markTransformPreviewOutdated);
+for (const input of document.querySelectorAll<HTMLInputElement>('input[name="outputAspect"]')) {
+  input.addEventListener("change", () => {
+    markTransformPreviewOutdated();
+    applyWatermarkPositionPreset();
+  });
+}
+for (const input of document.querySelectorAll<HTMLInputElement>('input[name="contentMode"]')) {
+  input.addEventListener("change", () => {
+    markTransformPreviewOutdated();
+    updateWatermarkPreview();
+  });
 }
 overlayScale.addEventListener("change", markTransformPreviewOutdated);
 overlayPosition.addEventListener("change", markTransformPreviewOutdated);
@@ -311,6 +486,57 @@ removeOriginalAudio.addEventListener("change", () => {
   syncForm();
 });
 loopAddedAudio.addEventListener("change", markTransformPreviewOutdated);
+
+watermarkScale.addEventListener("change", applyWatermarkPositionPreset);
+watermarkPosition.addEventListener("change", applyWatermarkPositionPreset);
+for (const input of [watermarkX, watermarkY, watermarkOpacity, watermarkSpacing, watermarkAngle, watermarkCount]) {
+  input.addEventListener("input", updateWatermarkPreview);
+}
+
+watermarkPositionControls.addEventListener("click", (event) => {
+  if (!(event.target instanceof HTMLInputElement)) watermarkPositionControls.focus();
+});
+watermarkPositionControls.addEventListener("keydown", (event) => {
+  if (event.target !== watermarkPositionControls || !watermarkImagePath) return;
+  const movement: Record<string, [number, number]> = {
+    ArrowLeft: [-1, 0],
+    ArrowRight: [1, 0],
+    ArrowUp: [0, -1],
+    ArrowDown: [0, 1],
+  };
+  const delta = movement[event.key];
+  if (!delta) return;
+  event.preventDefault();
+  setWatermarkCoordinate(watermarkX, Number(watermarkX.value) + delta[0]);
+  setWatermarkCoordinate(watermarkY, Number(watermarkY.value) + delta[1]);
+  updateWatermarkPreview();
+});
+
+watermarkOpacityControls.addEventListener("click", (event) => {
+  if (!(event.target instanceof HTMLInputElement)) watermarkOpacityControls.focus();
+});
+watermarkOpacityControls.addEventListener("keydown", (event) => {
+  if (!watermarkImagePath || (event.key !== "1" && event.key !== "3")) return;
+  event.preventDefault();
+  const delta = event.key === "1" ? 1 : -1;
+  setWatermarkCoordinate(watermarkOpacity, Number(watermarkOpacity.value) + delta);
+  updateWatermarkPreview();
+});
+
+document.addEventListener("keydown", (event) => {
+  if (!watermarkImagePath || event.ctrlKey || event.altKey || event.metaKey) return;
+  const active = document.activeElement;
+  if (active instanceof HTMLInputElement && ["text", "number"].includes(active.type)) return;
+  const shortcuts: Record<string, HTMLInputElement> = {
+    "4": watermarkSpacing,
+    "5": watermarkAngle,
+    "6": watermarkCount,
+  };
+  const target = shortcuts[event.key];
+  if (!target) return;
+  event.preventDefault();
+  target.focus();
+});
 
 selectAddedAudioButton.addEventListener("click", async () => {
   try {
@@ -350,6 +576,30 @@ clearOverlayImageButton.addEventListener("click", () => {
   markTransformPreviewOutdated();
   syncForm();
   setProgress(0, "重ねる画像を解除しました。");
+});
+
+selectWatermarkImageButton.addEventListener("click", async () => {
+  try {
+    const selected = await invoke<string | null>("select_image_file");
+    if (!selected) return;
+    const preview = await invoke<ImagePreviewData>("load_image_preview", { imagePath: selected });
+    releaseWatermarkPreviewUrl();
+    watermarkImagePath = selected;
+    watermarkPreviewUrl = URL.createObjectURL(new Blob([new Uint8Array(preview.bytes)], { type: preview.mimeType }));
+    applyWatermarkPositionPreset();
+    syncForm();
+    setProgress(0, "ウォーターマークを選択しました。動画へリアルタイム表示しています。");
+  } catch (error) {
+    setProgress(0, `ウォーターマークを選択できませんでした: ${String(error)}`, "error");
+  }
+});
+
+clearWatermarkImageButton.addEventListener("click", () => {
+  watermarkImagePath = "";
+  releaseWatermarkPreviewUrl();
+  updateWatermarkPreview();
+  syncForm();
+  setProgress(0, "ウォーターマークを解除しました。");
 });
 
 document.querySelector("#setTrimStart")!.addEventListener("click", () => {
@@ -433,6 +683,7 @@ trimButton.addEventListener("click", async () => {
         aspectRatio: selectedAspectRatio(),
         contentMode: selectedContentMode(),
         overlay: selectedOverlay(),
+        watermark: selectedWatermark(),
         audioVolume: Number(audioVolume.value),
         removeOriginalAudio: removeOriginalAudio.checked,
         addedAudio: selectedAddedAudio(),
@@ -460,7 +711,9 @@ async function initialize() {
     document.querySelector("#appVersion")!.textContent = "QuickVideoMaker";
   }
 
+  updateWatermarkPreview();
   syncForm();
 }
 
+window.addEventListener("beforeunload", releaseWatermarkPreviewUrl);
 initialize().catch((error) => setProgress(0, String(error), "error"));

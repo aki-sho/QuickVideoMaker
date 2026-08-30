@@ -92,6 +92,43 @@ async fn render_video_preview(
     Ok(result)
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ImagePreviewData {
+    bytes: Vec<u8>,
+    mime_type: String,
+}
+
+#[tauri::command]
+fn load_image_preview(image_path: String) -> Result<ImagePreviewData, String> {
+    let path = PathBuf::from(&image_path);
+    let metadata = std::fs::metadata(&path)
+        .map_err(|error| format!("画像プレビューを読み込めません: {error}"))?;
+    if !metadata.is_file() || metadata.len() > 32 * 1024 * 1024 {
+        return Err("画像プレビューは32MB以下の画像ファイルを選択してください。".to_string());
+    }
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(str::to_ascii_lowercase)
+        .ok_or_else(|| "画像の拡張子を確認してください。".to_string())?;
+    let mime_type = match extension.as_str() {
+        "jpg" | "jpeg" => "image/jpeg",
+        "png" => "image/png",
+        "bmp" => "image/bmp",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        "tif" | "tiff" => "image/tiff",
+        _ => return Err("対応していない画像形式です。".to_string()),
+    };
+    let bytes =
+        std::fs::read(path).map_err(|error| format!("画像プレビューを読み込めません: {error}"))?;
+    Ok(ImagePreviewData {
+        bytes,
+        mime_type: mime_type.to_string(),
+    })
+}
+
 fn set_preview(preview: &preview::PreviewStore, path: &str) -> Result<(), String> {
     let mut value = preview
         .lock()
@@ -141,7 +178,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             create_video,
             import_video,
             trim_video,
-            render_video_preview
+            render_video_preview,
+            load_image_preview
         ])
         .build(tauri::generate_context!())?;
 

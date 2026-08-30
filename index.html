@@ -97,7 +97,11 @@
           </div>
           <span id="videoDuration" class="duration-badge">00:00</span>
         </div>
-        <video id="videoPreview" controls preload="metadata" playsinline></video>
+        <div id="videoStage" class="video-stage" data-aspect="16:9">
+          <video id="videoPreview" controls preload="metadata" playsinline></video>
+          <div id="watermarkPreviewLayer" class="watermark-preview-layer" aria-hidden="true"></div>
+          <span id="watermarkLiveBadge" class="watermark-live-badge" hidden>ウォーターマーク・ライブ表示</span>
+        </div>
 
         <div class="trim-panel">
           <div class="trim-title">
@@ -193,9 +197,61 @@
             </div>
             <p class="overlay-note">白・黒は選択サイズの範囲を隠し、その中央へ画像を表示します。全面なら元映像全体を隠せます。</p>
           </section>
-          <section class="edit-section" aria-labelledby="edit-trim-heading">
+          <section class="edit-section watermark-panel" aria-labelledby="edit-watermark-heading">
             <div class="edit-section-heading">
               <span class="edit-number">4</span>
+              <div><h4 id="edit-watermark-heading">ウォーターマーク（任意）</h4><p>必ず最前面へ表示し、変更を動画へリアルタイム反映します。</p></div>
+            </div>
+            <div class="overlay-file-row">
+              <input id="watermarkImagePath" type="text" readonly placeholder="ウォーターマーク画像を選択してください" />
+              <button id="selectWatermarkImage" class="secondary" type="button">画像を選択</button>
+              <button id="clearWatermarkImage" class="overlay-clear" type="button">解除</button>
+            </div>
+
+            <div class="watermark-options">
+              <label>
+                サイズ
+                <select id="watermarkScale">
+                  <option value="small" selected>小（20%）</option>
+                  <option value="medium">中（35%）</option>
+                  <option value="large">大（50%）</option>
+                  <option value="full">全面（100%）</option>
+                </select>
+              </label>
+              <label>
+                基準位置
+                <select id="watermarkPosition">
+                  <option value="top-left">左上</option>
+                  <option value="top-right">右上</option>
+                  <option value="center">中央</option>
+                  <option value="bottom-left">左下</option>
+                  <option value="bottom-right" selected>右下</option>
+                </select>
+              </label>
+            </div>
+
+            <div id="watermarkPositionControls" class="watermark-control-group" tabindex="0">
+              <div class="watermark-control-heading"><strong>位置の微調整</strong><span>クリック後、矢印キーで1px移動</span></div>
+              <label class="watermark-range-row" for="watermarkX"><span>X座標</span><input id="watermarkX" type="range" min="0" max="1920" step="1" value="1488" /><output id="watermarkXValue" for="watermarkX">1488px</output></label>
+              <label class="watermark-range-row" for="watermarkY"><span>Y座標</span><input id="watermarkY" type="range" min="0" max="1080" step="1" value="837" /><output id="watermarkYValue" for="watermarkY">837px</output></label>
+            </div>
+
+            <div id="watermarkOpacityControls" class="watermark-control-group" tabindex="0">
+              <div class="watermark-control-heading"><strong>透過</strong><span><kbd>1</kbd>で濃く・<kbd>3</kbd>で薄く</span></div>
+              <label class="watermark-range-row" for="watermarkOpacity"><span>濃さ</span><input id="watermarkOpacity" type="range" min="0" max="100" step="1" value="50" /><output id="watermarkOpacityValue" for="watermarkOpacity">50%</output></label>
+            </div>
+
+            <div class="watermark-layout-heading"><strong>配置設定</strong><span>数字キーで各スライダーへ移動できます。</span></div>
+            <div class="watermark-layout-grid">
+              <label class="watermark-range-card" for="watermarkSpacing"><span>間隔 <kbd>4</kbd></span><input id="watermarkSpacing" type="range" min="0" max="400" step="1" value="48" /><output id="watermarkSpacingValue" for="watermarkSpacing">48px</output></label>
+              <label class="watermark-range-card" for="watermarkAngle"><span>角度 <kbd>5</kbd></span><input id="watermarkAngle" type="range" min="-180" max="180" step="1" value="15" /><output id="watermarkAngleValue" for="watermarkAngle">15°</output></label>
+              <label class="watermark-range-card" for="watermarkCount"><span>個数 <kbd>6</kbd></span><input id="watermarkCount" type="range" min="1" max="50" step="1" value="10" /><output id="watermarkCountValue" for="watermarkCount">10個</output></label>
+            </div>
+            <p id="watermarkSpacingGuide" class="overlay-note">元動画の横幅を解析し、間隔の初期値を自動設定します。</p>
+          </section>
+          <section class="edit-section" aria-labelledby="edit-trim-heading">
+            <div class="edit-section-heading">
+              <span class="edit-number">5</span>
               <div><h4 id="edit-trim-heading">カット</h4><p>残す範囲の開始時間と終了時間を指定します。</p></div>
             </div>
           <div class="trim-inputs">
@@ -217,7 +273,7 @@
           </section>
           <section class="edit-section" aria-labelledby="edit-audio-heading">
             <div class="edit-section-heading">
-              <span class="edit-number">5</span>
+              <span class="edit-number">6</span>
               <div><h4 id="edit-audio-heading">元の音声</h4><p>元動画の音量を0～100で調整します。100が元の音量です。</p></div>
             </div>
             <div class="audio-control">

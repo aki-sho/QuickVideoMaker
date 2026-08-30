@@ -60,6 +60,7 @@ pub struct TrimVideoRequest {
     aspect_ratio: OutputAspectRatio,
     content_mode: ContentMode,
     overlay: Option<OverlaySettings>,
+    watermark: Option<WatermarkSettings>,
     audio_volume: u8,
     remove_original_audio: bool,
     added_audio: Option<AddedAudioSettings>,
@@ -191,6 +192,32 @@ struct ValidatedOverlay {
     scale: OverlayScale,
     position: OverlayPosition,
     background: OverlayBackground,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WatermarkSettings {
+    image_path: String,
+    scale: OverlayScale,
+    position: OverlayPosition,
+    x: u32,
+    y: u32,
+    opacity: u8,
+    spacing: u32,
+    angle: i16,
+    count: u8,
+}
+
+struct ValidatedWatermark {
+    image_path: PathBuf,
+    scale: OverlayScale,
+    position: OverlayPosition,
+    x: u32,
+    y: u32,
+    opacity: u8,
+    spacing: u32,
+    angle: i16,
+    count: u8,
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -611,6 +638,7 @@ fn render_preview_with_progress(
         output_width,
         output_height,
         overlay.as_ref(),
+        None,
     );
     add_audio_mapping(
         &mut command,
@@ -708,14 +736,16 @@ fn trim_with_progress(
         .content_mode
         .video_filter(output_width, output_height);
     let overlay = validate_overlay(request.overlay)?;
+    let watermark = validate_watermark(request.watermark, output_width, output_height)?;
     paths.log(&format!(
-        "video trim started: {} ({:.3}-{:.3}, {}, {}, {})",
+        "video trim started: {} ({:.3}-{:.3}, {}, {}, {}, {})",
         output.display(),
         request.start_seconds,
         request.end_seconds,
         request.aspect_ratio.label(),
         request.content_mode.label(),
-        overlay_label(overlay.as_ref())
+        overlay_label(overlay.as_ref()),
+        watermark_label(watermark.as_ref())
     ));
     progress(2, "カット範囲を準備しました。");
 
@@ -728,8 +758,10 @@ fn trim_with_progress(
         .arg("-i")
         .arg(&input);
     add_overlay_input(&mut command, overlay.as_ref());
+    add_watermark_input(&mut command, watermark.as_ref());
     add_added_audio_input(&mut command, added_audio.as_ref());
-    let added_audio_input_index = if overlay.is_some() { 2 } else { 1 };
+    let added_audio_input_index =
+        1 + usize::from(overlay.is_some()) + usize::from(watermark.is_some());
     command.arg("-t").arg(format!("{trim_duration:.3}"));
     add_video_filter_and_mapping(
         &mut command,
@@ -737,6 +769,7 @@ fn trim_with_progress(
         output_width,
         output_height,
         overlay.as_ref(),
+        watermark.as_ref(),
     );
     add_audio_mapping(
         &mut command,
@@ -1011,6 +1044,47 @@ fn validate_overlay(value: Option<OverlaySettings>) -> Result<Option<ValidatedOv
         .transpose()
 }
 
+fn validate_watermark(
+    value: Option<WatermarkSettings>,
+    output_width: u32,
+    output_height: u32,
+) -> Result<Option<ValidatedWatermark>, String> {
+    value
+        .map(|watermark| {
+            if watermark.opacity > 100 {
+                return Err(
+                    "ウォーターマークの透過率は0から100の間で指定してください。".to_string()
+                );
+            }
+            if !(-180..=180).contains(&watermark.angle) {
+                return Err(
+                    "ウォーターマークの角度は-180度から180度の間で指定してください。".to_string(),
+                );
+            }
+            if !(1..=50).contains(&watermark.count) {
+                return Err("ウォーターマークの個数は1から50の間で指定してください。".to_string());
+            }
+            if watermark.spacing > output_width.max(output_height) {
+                return Err("ウォーターマークの間隔が動画サイズを超えています。".to_string());
+            }
+            if watermark.x > output_width || watermark.y > output_height {
+                return Err("ウォーターマークの位置が動画サイズを超えています。".to_string());
+            }
+            Ok(ValidatedWatermark {
+                image_path: validate_input(&watermark.image_path, "ウォーターマーク")?,
+                scale: watermark.scale,
+                position: watermark.position,
+                x: watermark.x,
+                y: watermark.y,
+                opacity: watermark.opacity,
+                spacing: watermark.spacing,
+                angle: watermark.angle,
+                count: watermark.count,
+            })
+        })
+        .transpose()
+}
+
 fn add_overlay_input(command: &mut Command, overlay: Option<&ValidatedOverlay>) {
     if let Some(overlay) = overlay {
         command
@@ -1021,52 +1095,134 @@ fn add_overlay_input(command: &mut Command, overlay: Option<&ValidatedOverlay>) 
     }
 }
 
+fn add_watermark_input(command: &mut Command, watermark: Option<&ValidatedWatermark>) {
+    if let Some(watermark) = watermark {
+        command
+            .arg("-loop")
+            .arg("1")
+            .arg("-i")
+            .arg(&watermark.image_path);
+    }
+}
+
 fn add_video_filter_and_mapping(
     command: &mut Command,
     base_filter: String,
     output_width: u32,
     output_height: u32,
     overlay: Option<&ValidatedOverlay>,
+    watermark: Option<&ValidatedWatermark>,
 ) {
+    if overlay.is_none() && watermark.is_none() {
+        command.arg("-map").arg("0:v:0").arg("-vf").arg(base_filter);
+        return;
+    }
+
+    let filter = build_layered_video_filter(
+        &base_filter,
+        output_width,
+        output_height,
+        overlay,
+        watermark,
+    );
+    command
+        .arg("-filter_complex")
+        .arg(filter)
+        .arg("-map")
+        .arg("[outv]");
+}
+
+fn build_layered_video_filter(
+    base_filter: &str,
+    output_width: u32,
+    output_height: u32,
+    overlay: Option<&ValidatedOverlay>,
+    watermark: Option<&ValidatedWatermark>,
+) -> String {
+    let mut filter = format!("[0:v]{base_filter}[base]");
+    let mut current = "base".to_string();
+
     if let Some(overlay) = overlay {
         let percent = overlay.scale.percent();
-        let box_width = output_width * percent / 100;
-        let box_height = output_height * percent / 100;
+        let box_width = (output_width * percent / 100).max(2);
+        let box_height = (output_height * percent / 100).max(2);
         let coordinates = overlay
             .position
             .coordinates((output_width / 40).max(8), (output_height / 40).max(8));
-        let filter = build_overlay_filter(
-            &base_filter,
-            box_width,
-            box_height,
-            &coordinates,
-            overlay.background,
-        );
-        command
-            .arg("-filter_complex")
-            .arg(filter)
-            .arg("-map")
-            .arg("[outv]");
-    } else {
-        command.arg("-map").arg("0:v:0").arg("-vf").arg(base_filter);
+        match overlay.background.color() {
+            None => filter.push_str(&format!(
+                ";[1:v]format=rgba,scale={box_width}:{box_height}:force_original_aspect_ratio=decrease[overlay_image];[{current}][overlay_image]overlay={coordinates}:format=auto[after_overlay]"
+            )),
+            Some(color) => filter.push_str(&format!(
+                ";[1:v]format=rgba,scale={box_width}:{box_height}:force_original_aspect_ratio=decrease[overlay_image];color=c={color}:s={box_width}x{box_height}:r=30,format=rgba[overlay_plate];[overlay_plate][overlay_image]overlay=(W-w)/2:(H-h)/2:format=auto[composed_overlay];[{current}][composed_overlay]overlay={coordinates}:format=auto[after_overlay]"
+            )),
+        }
+        current = "after_overlay".to_string();
     }
+
+    if let Some(watermark) = watermark {
+        let watermark_input = if overlay.is_some() { 2 } else { 1 };
+        let percent = watermark.scale.percent();
+        let box_width = (output_width * percent / 100).max(2);
+        let box_height = (output_height * percent / 100).max(2);
+        let opacity = f64::from(watermark.opacity) / 100.0;
+        let radians = f64::from(watermark.angle).to_radians();
+        let labels = (0..watermark.count)
+            .map(|index| format!("[watermark_{index}]"))
+            .collect::<String>();
+        let split = if watermark.count == 1 {
+            "[watermark_0]".to_string()
+        } else {
+            format!(",split={}{labels}", watermark.count)
+        };
+        filter.push_str(&format!(
+            ";[{watermark_input}:v]format=rgba,scale={box_width}:{box_height}:force_original_aspect_ratio=decrease,colorchannelmixer=aa={opacity:.2},rotate={radians:.6}:ow=rotw(iw):oh=roth(ih):c=none{split}"
+        ));
+
+        let positions = watermark_positions(watermark, output_width, output_height);
+        for (index, (x, y)) in positions.into_iter().enumerate() {
+            let next = if index + 1 == usize::from(watermark.count) {
+                "watermarked".to_string()
+            } else {
+                format!("watermark_layer_{index}")
+            };
+            filter.push_str(&format!(
+                ";[{current}][watermark_{index}]overlay={x}:{y}:format=auto[{next}]"
+            ));
+            current = next;
+        }
+    }
+
+    filter.push_str(&format!(";[{current}]format=yuv420p[outv]"));
+    filter
 }
 
-fn build_overlay_filter(
-    base_filter: &str,
-    box_width: u32,
-    box_height: u32,
-    coordinates: &str,
-    background: OverlayBackground,
-) -> String {
-    match background.color() {
-        None => format!(
-            "[0:v]{base_filter}[base];[1:v]format=rgba,scale={box_width}:{box_height}:force_original_aspect_ratio=decrease[overlay];[base][overlay]overlay={coordinates}:format=auto,format=yuv420p[outv]"
-        ),
-        Some(color) => format!(
-            "[0:v]{base_filter}[base];[1:v]format=rgba,scale={box_width}:{box_height}:force_original_aspect_ratio=decrease[overlay_image];color=c={color}:s={box_width}x{box_height}:r=30,format=rgba[plate];[plate][overlay_image]overlay=(W-w)/2:(H-h)/2:format=auto[overlay];[base][overlay]overlay={coordinates}:format=auto,format=yuv420p[outv]"
-        ),
-    }
+fn watermark_positions(
+    watermark: &ValidatedWatermark,
+    output_width: u32,
+    output_height: u32,
+) -> Vec<(u32, u32)> {
+    let percent = watermark.scale.percent();
+    let box_width = (output_width * percent / 100).max(2);
+    let box_height = (output_height * percent / 100).max(2);
+    let max_x = output_width.saturating_sub(box_width);
+    let max_y = output_height.saturating_sub(box_height);
+    let base_x = watermark.x.min(max_x);
+    let base_y = watermark.y.min(max_y);
+    let step_x = u64::from(box_width.saturating_add(watermark.spacing).max(1));
+    let step_y = u64::from(box_height.saturating_add(watermark.spacing).max(1));
+    let span_x = u64::from(max_x) + 1;
+    let span_y = u64::from(max_y) + 1;
+
+    (0..watermark.count)
+        .map(|index| {
+            let index = u64::from(index);
+            (
+                ((u64::from(base_x) + index * step_x) % span_x) as u32,
+                ((u64::from(base_y) + index * step_y) % span_y) as u32,
+            )
+        })
+        .collect()
 }
 
 fn overlay_label(overlay: Option<&ValidatedOverlay>) -> String {
@@ -1082,6 +1238,22 @@ fn overlay_label(overlay: Option<&ValidatedOverlay>) -> String {
         .unwrap_or_else(|| "no-overlay".to_string())
 }
 
+fn watermark_label(watermark: Option<&ValidatedWatermark>) -> String {
+    watermark
+        .map(|value| {
+            format!(
+                "watermark:{}:{}:{}:{}:{}:{}:{}",
+                value.scale.label(),
+                value.position.label(),
+                value.x,
+                value.y,
+                value.opacity,
+                value.spacing,
+                value.count
+            )
+        })
+        .unwrap_or_else(|| "no-watermark".to_string())
+}
 fn validate_input(value: &str, label: &str) -> Result<PathBuf, String> {
     let path = PathBuf::from(value);
     if !path.is_file() {
@@ -1224,9 +1396,10 @@ mod tests {
     use super::{
         compact_error, has_audio_stream, inspect_video, parse_duration_seconds,
         parse_video_dimensions, render_preview_with_progress, trim_with_progress,
-        validate_audio_volume, AddedAudioSettings, ContentMode, CreateOutputSize,
-        OutputAspectRatio, OverlayBackground, OverlayPosition, OverlayScale, OverlaySettings,
-        PreviewVideoRequest, TrimVideoRequest,
+        validate_audio_volume, watermark_positions, AddedAudioSettings, ContentMode,
+        CreateOutputSize, OutputAspectRatio, OverlayBackground, OverlayPosition, OverlayScale,
+        OverlaySettings, PreviewVideoRequest, TrimVideoRequest, ValidatedWatermark,
+        WatermarkSettings,
     };
     use crate::{portable::PortablePaths, state::ProcessControl};
     use std::{
@@ -1296,6 +1469,25 @@ mod tests {
         assert!(validate_audio_volume(0).is_ok());
         assert!(validate_audio_volume(100).is_ok());
         assert!(validate_audio_volume(101).is_err());
+    }
+
+    #[test]
+    fn places_repeated_watermarks_inside_the_video() {
+        let watermark = ValidatedWatermark {
+            image_path: PathBuf::new(),
+            scale: OverlayScale::Small,
+            position: OverlayPosition::BottomRight,
+            x: 100,
+            y: 200,
+            opacity: 50,
+            spacing: 48,
+            angle: 15,
+            count: 10,
+        };
+        let positions = watermark_positions(&watermark, 1080, 1920);
+        assert_eq!(positions.len(), 10);
+        assert_eq!(positions[0], (100, 200));
+        assert!(positions.iter().all(|(x, y)| *x <= 864 && *y <= 1536));
     }
 
     #[test]
@@ -1493,6 +1685,17 @@ mod tests {
                     scale: OverlayScale::Medium,
                     position: OverlayPosition::BottomRight,
                     background: OverlayBackground::Black,
+                }),
+                watermark: Some(WatermarkSettings {
+                    image_path: overlay_image.to_string_lossy().into_owned(),
+                    scale: OverlayScale::Small,
+                    position: OverlayPosition::TopLeft,
+                    x: 24,
+                    y: 48,
+                    opacity: 60,
+                    spacing: 48,
+                    angle: 15,
+                    count: 3,
                 }),
                 audio_volume: 40,
                 remove_original_audio: false,
