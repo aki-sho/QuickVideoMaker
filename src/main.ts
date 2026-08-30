@@ -326,6 +326,15 @@ function releaseWatermarkPreviewUrl() {
   watermarkPreviewUrl = "";
 }
 
+function waitForImagePreview(url: string) {
+  return new Promise<void>((resolve, reject) => {
+    const image = new Image();
+    image.addEventListener("load", () => resolve(), { once: true });
+    image.addEventListener("error", () => reject(new Error("選択した画像を画面に表示できません。")), { once: true });
+    image.src = url;
+  });
+}
+
 function resetWatermarkSettings(result: VideoResult) {
   releaseWatermarkPreviewUrl();
   watermarkImagePath = "";
@@ -399,6 +408,7 @@ function showTransformPreview(result: VideoResult) {
   previewVideo.src = `${convertFileSrc("preview", "qvm")}?v=${Date.now()}`;
   previewVideo.load();
   previewVideo.addEventListener("canplay", () => void previewVideo.play(), { once: true });
+  updateWatermarkPreview();
 }
 
 async function choose(kind: "music" | "image" | "output") {
@@ -591,9 +601,16 @@ selectWatermarkImageButton.addEventListener("click", async () => {
     const selected = await invoke<string | null>("select_image_file");
     if (!selected) return;
     const preview = await invoke<ImagePreviewData>("load_image_preview", { imagePath: selected });
+    const nextPreviewUrl = URL.createObjectURL(new Blob([new Uint8Array(preview.bytes)], { type: preview.mimeType }));
+    try {
+      await waitForImagePreview(nextPreviewUrl);
+    } catch (error) {
+      URL.revokeObjectURL(nextPreviewUrl);
+      throw error;
+    }
     releaseWatermarkPreviewUrl();
     watermarkImagePath = selected;
-    watermarkPreviewUrl = URL.createObjectURL(new Blob([new Uint8Array(preview.bytes)], { type: preview.mimeType }));
+    watermarkPreviewUrl = nextPreviewUrl;
     applyWatermarkPositionPreset();
     syncForm();
     setProgress(0, "ウォーターマークを選択しました。動画へリアルタイム表示しています。");
@@ -625,6 +642,7 @@ document.querySelector("#setTrimEnd")!.addEventListener("click", () => {
 });
 
 previewVideo.addEventListener("loadedmetadata", () => {
+  updateWatermarkPreview();
   syncForm();
 });
 

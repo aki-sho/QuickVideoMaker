@@ -25,7 +25,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: data:; media-src qvm: http://qvm.localhost; connect-src ipc: http://ipc.localhost"
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: data: blob:; media-src qvm: http://qvm.localhost; connect-src ipc: http://ipc.localhost"
     }
   },
   "bundle": {
