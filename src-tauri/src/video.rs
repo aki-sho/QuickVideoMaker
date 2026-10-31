@@ -1,19 +1,22 @@
 use crate::metadata::{self, EditableMetadata, VideoMetadata};
-use crate::{portable::PortablePaths, state::ProcessControl};
+use crate::{
+    media_security::{self, InputKind},
+    portable::PortablePaths,
+    safe_output,
+    state::ProcessControl,
+    subprocess,
+};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::VecDeque,
     fs,
-    io::{BufRead, BufReader},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc, Mutex,
+        atomic::{AtomicU64, AtomicU8, Ordering},
+        Arc,
     },
-    thread,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Emitter};
 
@@ -323,10 +326,25 @@ pub fn generate(
         return Err("アプリを終了しています。".to_string());
     }
 
-    let audio = validate_input(&request.audio_path, "音楽")?;
-    let image = validate_input(&request.image_path, "画像")?;
-    let output = validate_output(&request.output_path, &audio, &image)?;
+    let audio = media_security::validate_input(&request.audio_path, InputKind::Audio, "音楽")?;
+    let image = media_security::validate_input(&request.image_path, InputKind::Image, "画像")?;
+    let output = safe_output::validate(&request.output_path, &[&audio, &image])?;
     let ffmpeg = paths.ffmpeg_path()?;
+    let mut audio_probe = media_security::ffmpeg_command(&ffmpeg);
+    media_security::add_input(&mut audio_probe, &audio, false)?;
+    let audio_info = subprocess::capture(
+        audio_probe,
+        subprocess::ANALYSIS_TIMEOUT,
+        subprocess::MAX_CAPTURE,
+        None,
+    )?;
+    let details = String::from_utf8_lossy(&audio_info.stderr);
+    let audio_duration = parse_duration_seconds(&details)
+        .filter(|duration| *duration > 0.0 && *duration <= 86_400.0)
+        .filter(|_| details.contains("Audio:"))
+        .ok_or_else(|| {
+            "音楽の長さを取得できません。24時間以内の音楽ファイルを選択してください。".to_string()
+        })?;
     let session = paths.session_temp()?;
     let temporary_output = session.join("video-output.mp4");
 
@@ -337,22 +355,18 @@ pub fn generate(
         request.output_size.label()
     ));
 
-    let mut command = Command::new(&ffmpeg);
+    let mut command = media_security::ffmpeg_command(&ffmpeg);
+    command.arg("-y");
+    media_security::add_input(&mut command, &image, true)?;
+    media_security::add_input(&mut command, &audio, false)?;
     command
-        .arg("-hide_banner")
-        .arg("-y")
-        .arg("-loop")
-        .arg("1")
-        .arg("-framerate")
-        .arg("30")
-        .arg("-i")
-        .arg(&image)
-        .arg("-i")
-        .arg(&audio)
+        .arg("-t")
+        .arg(format!("{audio_duration:.3}"))
         .arg("-vf")
         .arg(request.output_size.video_filter())
         .arg("-c:v")
         .arg("libx264")
+        .args(["-threads", "2"])
         .arg("-preset")
         .arg("medium")
         .arg("-tune")
@@ -374,152 +388,47 @@ pub fn generate(
         .env("TEMP", &paths.temp)
         .env("TMP", &paths.temp);
 
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        command.creation_flags(CREATE_NO_WINDOW);
-    }
-
-    let mut child = command
-        .spawn()
-        .map_err(|error| format!("FFmpegを起動できません: {error}"))?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "FFmpegの進捗を取得できません".to_string())?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| "FFmpegの出力を取得できません".to_string())?;
-
-    {
-        let mut active = process
-            .child
-            .lock()
-            .map_err(|_| "プロセス管理を開始できません".to_string())?;
-        *active = Some(child);
-    }
-
-    let duration_ms = Arc::new(AtomicU64::new(0));
-    let error_lines = Arc::new(Mutex::new(VecDeque::<String>::with_capacity(24)));
-    let duration_for_stderr = duration_ms.clone();
-    let errors_for_stderr = error_lines.clone();
-    let stderr_thread = thread::spawn(move || {
-        let duration_pattern = Regex::new(r"Duration: (\d{2}):(\d{2}):(\d{2}(?:\.\d+)?)")
-            .expect("valid duration regex");
-        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-            if duration_for_stderr.load(Ordering::Relaxed) == 0 {
-                if let Some(captures) = duration_pattern.captures(&line) {
-                    let hours = captures[1].parse::<f64>().unwrap_or_default();
-                    let minutes = captures[2].parse::<f64>().unwrap_or_default();
-                    let seconds = captures[3].parse::<f64>().unwrap_or_default();
-                    duration_for_stderr.store(
-                        ((hours * 3600.0 + minutes * 60.0 + seconds) * 1000.0) as u64,
-                        Ordering::Relaxed,
-                    );
-                }
-            }
-            if let Ok(mut lines) = errors_for_stderr.lock() {
-                if lines.len() == 24 {
-                    lines.pop_front();
-                }
-                lines.push_back(line);
-            }
-        }
+    let progress: Arc<dyn Fn(u8, &str) + Send + Sync> = Arc::new({
+        let app = app.clone();
+        move |percent, message| emit_progress(&app, percent, message)
     });
-
-    let app_for_stdout = app.clone();
-    let duration_for_stdout = duration_ms.clone();
-    let stdout_thread = thread::spawn(move || {
-        let mut last_percent = 0_u8;
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if let Some(value) = line.strip_prefix("out_time_us=") {
-                let elapsed_ms = value.parse::<u64>().unwrap_or_default() / 1000;
-                let duration = duration_for_stdout.load(Ordering::Relaxed);
-                let percent = if duration > 0 {
-                    (5.0 + (elapsed_ms as f64 / duration as f64 * 90.0)).min(95.0) as u8
-                } else {
-                    5
-                };
-                if percent > last_percent {
-                    last_percent = percent;
-                    emit_progress(
-                        &app_for_stdout,
-                        percent,
-                        "映像と音声をエンコードしています…",
-                    );
-                }
-            }
-        }
-    });
-
-    let exit_status = loop {
-        let result = {
-            let mut active = process
-                .child
-                .lock()
-                .map_err(|_| "プロセス状態を確認できません".to_string())?;
-            match active.as_mut() {
-                Some(child) => child.try_wait(),
-                None => return Err("動画作成プロセスが中断されました。".to_string()),
-            }
-        };
-        match result {
-            Ok(Some(status)) => break status,
-            Ok(None) => thread::sleep(Duration::from_millis(100)),
-            Err(error) => return Err(format!("FFmpegの状態を確認できません: {error}")),
-        }
-    };
-
-    if let Ok(mut active) = process.child.lock() {
-        active.take();
-    }
-    let _ = stdout_thread.join();
-    let _ = stderr_thread.join();
-
-    if !exit_status.success() {
-        let details = error_lines
-            .lock()
-            .map(|lines| lines.iter().cloned().collect::<Vec<_>>().join("\n"))
-            .unwrap_or_default();
+    if let Err(error) = run_trim_process(
+        progress,
+        &process,
+        command,
+        audio_duration,
+        "映像と音声をエンコードしています…",
+    ) {
         let _ = fs::remove_dir_all(&session);
-        paths.log(&format!("ffmpeg failed: {details}"));
-        return Err(format!(
-            "FFmpegがエラーを返しました。\n{}",
-            compact_error(&details)
-        ));
+        paths.log(&format!("video creation failed: {error}"));
+        return Err(error);
     }
 
     emit_progress(&app, 97, "完成した動画を保存しています…");
-    if let Some(parent) = output.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|error| format!("保存先フォルダーを作成できません: {error}"))?;
-    }
-    fs::copy(&temporary_output, &output)
-        .map_err(|error| format!("動画を保存できません: {error}"))?;
+    let mut result = inspect_video(&paths, &temporary_output.to_string_lossy())?;
+    safe_output::save(&temporary_output, &output, &[&audio, &image])?;
+    result.output_path = fs::canonicalize(&output)
+        .map_err(|e| e.to_string())?
+        .to_string_lossy()
+        .into_owned();
     let _ = fs::remove_dir_all(&session);
     paths.log(&format!("video creation completed: {}", output.display()));
     emit_progress(&app, 100, "動画を作成しました。");
-    inspect_video(&paths, &output.to_string_lossy())
+    Ok(result)
 }
 
 pub fn inspect_video(paths: &PortablePaths, value: &str) -> Result<VideoResult, String> {
-    let input = validate_input(value, "動画")?;
+    let input = media_security::validate_input(value, InputKind::Video, "動画")?;
     let ffmpeg = paths.ffmpeg_path()?;
-    let mut command = Command::new(ffmpeg);
-    command
-        .arg("-hide_banner")
-        .arg("-i")
-        .arg(&input)
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .stdin(Stdio::null());
-    hide_console_window(&mut command);
+    let mut command = media_security::ffmpeg_command(ffmpeg);
+    media_security::add_input(&mut command, &input, false)?;
 
-    let output = command
-        .output()
-        .map_err(|error| format!("動画情報を取得できません: {error}"))?;
+    let output = subprocess::capture(
+        command,
+        subprocess::ANALYSIS_TIMEOUT,
+        subprocess::MAX_CAPTURE,
+        None,
+    )?;
     let details = String::from_utf8_lossy(&output.stderr);
     if !details.contains("Video:") {
         return Err("映像ストリームを含む動画ファイルを選択してください。".to_string());
@@ -530,7 +439,14 @@ pub fn inspect_video(paths: &PortablePaths, value: &str) -> Result<VideoResult, 
     let (width, height) = parse_video_dimensions(&details)
         .ok_or_else(|| "動画の幅と高さを取得できません。".to_string())?;
 
-    let metadata = metadata::inspect(paths, &input, &details, width, height);
+    if duration_seconds > 86_400.0
+        || width == 0
+        || height == 0
+        || u64::from(width) * u64::from(height) > 67_108_864
+    {
+        return Err("動画の長さまたは解像度が安全上の上限を超えています。".to_string());
+    }
+    let metadata = metadata::inspect(paths, &input, &details, width, height)?;
     Ok(VideoResult {
         output_path: input.to_string_lossy().into_owned(),
         duration_seconds,
@@ -585,7 +501,8 @@ fn render_preview_with_progress(
         return Err("アプリを終了しています。".to_string());
     }
 
-    let input = validate_input(&input_path.to_string_lossy(), "動画")?;
+    let input =
+        media_security::validate_input(&input_path.to_string_lossy(), InputKind::Video, "動画")?;
     let source = inspect_video(&paths, &input.to_string_lossy())?;
     validate_trim_range(
         request.start_seconds,
@@ -625,16 +542,14 @@ fn render_preview_with_progress(
     ));
     progress(2, "保存前プレビューを準備しました。");
 
-    let mut command = Command::new(ffmpeg);
+    let mut command = media_security::ffmpeg_command(ffmpeg);
     command
-        .arg("-hide_banner")
         .arg("-y")
         .arg("-ss")
-        .arg(format!("{:.3}", request.start_seconds))
-        .arg("-i")
-        .arg(&input);
-    add_overlay_input(&mut command, overlay.as_ref());
-    add_added_audio_input(&mut command, added_audio.as_ref());
+        .arg(format!("{:.3}", request.start_seconds));
+    media_security::add_input(&mut command, &input, false)?;
+    add_overlay_input(&mut command, overlay.as_ref())?;
+    add_added_audio_input(&mut command, added_audio.as_ref())?;
     let added_audio_input_index = if overlay.is_some() { 2 } else { 1 };
     command.arg("-t").arg(format!("{preview_duration:.3}"));
     add_video_filter_and_mapping(
@@ -656,6 +571,7 @@ fn render_preview_with_progress(
     command
         .arg("-c:v")
         .arg("libx264")
+        .args(["-threads", "2"])
         .arg("-preset")
         .arg("ultrafast")
         .arg("-crf")
@@ -720,7 +636,8 @@ fn trim_with_progress(
         return Err("アプリを終了しています。".to_string());
     }
 
-    let input = validate_input(&input_path.to_string_lossy(), "動画")?;
+    let input =
+        media_security::validate_input(&input_path.to_string_lossy(), InputKind::Video, "動画")?;
     let source = inspect_video(&paths, &input.to_string_lossy())?;
     validate_trim_range(
         request.start_seconds,
@@ -731,7 +648,6 @@ fn trim_with_progress(
     let source_has_audio = has_audio_stream(&paths, &input)?;
     let added_audio = validate_added_audio(&paths, request.added_audio)?;
 
-    let output = validate_trim_output(&request.output_path, &input)?;
     let ffmpeg = paths.ffmpeg_path()?;
     let session = paths.session_temp()?;
     let temporary_output = session.join("trimmed-output.mp4");
@@ -742,6 +658,17 @@ fn trim_with_progress(
         .video_filter(output_width, output_height);
     let overlay = validate_overlay(request.overlay)?;
     let watermark = validate_watermark(request.watermark, output_width, output_height)?;
+    let mut protected = vec![input.as_path()];
+    if let Some(value) = &overlay {
+        protected.push(&value.image_path);
+    }
+    if let Some(value) = &watermark {
+        protected.push(&value.image_path);
+    }
+    if let Some(value) = &added_audio {
+        protected.push(&value.audio_path);
+    }
+    let output = safe_output::validate(&request.output_path, &protected)?;
     paths.log(&format!(
         "video trim started: {} ({:.3}-{:.3}, {}, {}, {}, {})",
         output.display(),
@@ -754,17 +681,15 @@ fn trim_with_progress(
     ));
     progress(2, "カット範囲を準備しました。");
 
-    let mut command = Command::new(ffmpeg);
+    let mut command = media_security::ffmpeg_command(ffmpeg);
     command
-        .arg("-hide_banner")
         .arg("-y")
         .arg("-ss")
-        .arg(format!("{:.3}", request.start_seconds))
-        .arg("-i")
-        .arg(&input);
-    add_overlay_input(&mut command, overlay.as_ref());
-    add_watermark_input(&mut command, watermark.as_ref());
-    add_added_audio_input(&mut command, added_audio.as_ref());
+        .arg(format!("{:.3}", request.start_seconds));
+    media_security::add_input(&mut command, &input, false)?;
+    add_overlay_input(&mut command, overlay.as_ref())?;
+    add_watermark_input(&mut command, watermark.as_ref())?;
+    add_added_audio_input(&mut command, added_audio.as_ref())?;
     let added_audio_input_index =
         1 + usize::from(overlay.is_some()) + usize::from(watermark.is_some());
     command.arg("-t").arg(format!("{trim_duration:.3}"));
@@ -787,6 +712,7 @@ fn trim_with_progress(
     command
         .arg("-c:v")
         .arg("libx264")
+        .args(["-threads", "2"])
         .arg("-preset")
         .arg("medium")
         .arg("-c:a")
@@ -826,107 +752,54 @@ fn trim_with_progress(
     }
 
     progress(97, "カットした動画を保存しています…");
-    if let Some(parent) = output.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|error| format!("保存先フォルダーを作成できません: {error}"))?;
-    }
-    fs::copy(&temporary_output, &output)
-        .map_err(|error| format!("カットした動画を保存できません: {error}"))?;
+    let mut result = inspect_video(&paths, &temporary_output.to_string_lossy())?;
+    safe_output::save(&temporary_output, &output, &protected)?;
+    result.output_path = fs::canonicalize(&output)
+        .map_err(|e| e.to_string())?
+        .to_string_lossy()
+        .into_owned();
     let _ = fs::remove_dir_all(&session);
     paths.log(&format!("video trim completed: {}", output.display()));
     progress(100, "カットした動画を保存しました。");
-    inspect_video(&paths, &output.to_string_lossy())
+    Ok(result)
 }
 
 fn run_trim_process(
     progress: Arc<dyn Fn(u8, &str) + Send + Sync>,
     process: &Arc<ProcessControl>,
-    mut command: Command,
+    command: Command,
     total_seconds: f64,
     progress_message: &'static str,
 ) -> Result<(), String> {
-    let mut child = command
-        .spawn()
-        .map_err(|error| format!("FFmpegを起動できません: {error}"))?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "FFmpegの進捗を取得できません".to_string())?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| "FFmpegの出力を取得できません".to_string())?;
-    {
-        let mut active = process
-            .child
-            .lock()
-            .map_err(|_| "プロセス管理を開始できません".to_string())?;
-        *active = Some(child);
-    }
-
-    let error_lines = Arc::new(Mutex::new(VecDeque::<String>::with_capacity(24)));
-    let errors_for_stderr = error_lines.clone();
-    let stderr_thread = thread::spawn(move || {
-        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-            if let Ok(mut lines) = errors_for_stderr.lock() {
-                if lines.len() == 24 {
-                    lines.pop_front();
+    let duration_ms = AtomicU64::new((total_seconds * 1000.0) as u64);
+    let last_percent = AtomicU8::new(0);
+    subprocess::encode(
+        command,
+        process,
+        Arc::new(move |is_stderr, line| {
+            if is_stderr {
+                if duration_ms.load(Ordering::Relaxed) == 0 {
+                    if let Some(duration) = parse_duration_seconds(line) {
+                        duration_ms.store((duration * 1000.0) as u64, Ordering::Relaxed);
+                    }
                 }
-                lines.push_back(line);
-            }
-        }
-    });
-
-    let progress_for_stdout = progress.clone();
-    let stdout_thread = thread::spawn(move || {
-        let mut last_percent = 0_u8;
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if let Some(value) = line.strip_prefix("out_time_us=") {
-                let elapsed_seconds = value.parse::<u64>().unwrap_or_default() as f64 / 1_000_000.0;
-                let percent = (5.0 + elapsed_seconds / total_seconds * 90.0).min(95.0) as u8;
-                if percent > last_percent {
-                    last_percent = percent;
-                    progress_for_stdout(percent, progress_message);
+            } else if let Some(elapsed) = line
+                .strip_prefix("out_time_us=")
+                .and_then(|v| v.parse::<u64>().ok())
+            {
+                let duration = duration_ms.load(Ordering::Relaxed);
+                let percent = if duration > 0 {
+                    (5.0 + elapsed as f64 / 1000.0 / duration as f64 * 90.0).min(95.0) as u8
+                } else {
+                    5
+                };
+                if percent > last_percent.load(Ordering::Relaxed) {
+                    last_percent.store(percent, Ordering::Relaxed);
+                    progress(percent, progress_message);
                 }
             }
-        }
-    });
-
-    let exit_status = loop {
-        let result = {
-            let mut active = process
-                .child
-                .lock()
-                .map_err(|_| "プロセス状態を確認できません".to_string())?;
-            match active.as_mut() {
-                Some(child) => child.try_wait(),
-                None => return Err("動画カットプロセスが中断されました。".to_string()),
-            }
-        };
-        match result {
-            Ok(Some(status)) => break status,
-            Ok(None) => thread::sleep(Duration::from_millis(100)),
-            Err(error) => return Err(format!("FFmpegの状態を確認できません: {error}")),
-        }
-    };
-
-    if let Ok(mut active) = process.child.lock() {
-        active.take();
-    }
-    let _ = stdout_thread.join();
-    let _ = stderr_thread.join();
-    if exit_status.success() {
-        return Ok(());
-    }
-
-    let details = error_lines
-        .lock()
-        .map(|lines| lines.iter().cloned().collect::<Vec<_>>().join("\n"))
-        .unwrap_or_default();
-    Err(format!(
-        "FFmpegがカット処理中にエラーを返しました。\n{}",
-        compact_error(&details)
-    ))
+        }),
+    )
 }
 
 fn validate_trim_range(start_seconds: f64, end_seconds: f64, duration: f64) -> Result<(), String> {
@@ -956,7 +829,11 @@ fn validate_added_audio(
 ) -> Result<Option<ValidatedAddedAudio>, String> {
     value
         .map(|audio| {
-            let audio_path = validate_input(&audio.audio_path, "追加する音声")?;
+            let audio_path = media_security::validate_input(
+                &audio.audio_path,
+                InputKind::Audio,
+                "追加する音声",
+            )?;
             if !has_audio_stream(paths, &audio_path)? {
                 return Err("追加するファイルに音声データがありません。".to_string());
             }
@@ -968,13 +845,17 @@ fn validate_added_audio(
         .transpose()
 }
 
-fn add_added_audio_input(command: &mut Command, audio: Option<&ValidatedAddedAudio>) {
+fn add_added_audio_input(
+    command: &mut Command,
+    audio: Option<&ValidatedAddedAudio>,
+) -> Result<(), String> {
     if let Some(audio) = audio {
         if audio.loop_audio {
             command.arg("-stream_loop").arg("-1");
         }
-        command.arg("-i").arg(&audio.audio_path);
+        media_security::add_input(command, &audio.audio_path, false)?;
     }
+    Ok(())
 }
 
 fn add_audio_mapping(
@@ -1023,18 +904,14 @@ fn add_audio_mapping(
 }
 
 fn has_audio_stream(paths: &PortablePaths, input: &Path) -> Result<bool, String> {
-    let mut command = Command::new(paths.ffmpeg_path()?);
-    command
-        .arg("-hide_banner")
-        .arg("-i")
-        .arg(input)
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .stdin(Stdio::null());
-    hide_console_window(&mut command);
-    let output = command
-        .output()
-        .map_err(|error| format!("音声情報を取得できません: {error}"))?;
+    let mut command = media_security::ffmpeg_command(paths.ffmpeg_path()?);
+    media_security::add_input(&mut command, &input, false)?;
+    let output = subprocess::capture(
+        command,
+        subprocess::ANALYSIS_TIMEOUT,
+        subprocess::MAX_CAPTURE,
+        None,
+    )?;
     Ok(String::from_utf8_lossy(&output.stderr).contains("Audio:"))
 }
 
@@ -1042,7 +919,11 @@ fn validate_overlay(value: Option<OverlaySettings>) -> Result<Option<ValidatedOv
     value
         .map(|overlay| {
             Ok(ValidatedOverlay {
-                image_path: validate_input(&overlay.image_path, "重ねる画像")?,
+                image_path: media_security::validate_input(
+                    &overlay.image_path,
+                    InputKind::Image,
+                    "重ねる画像",
+                )?,
                 scale: overlay.scale,
                 position: overlay.position,
                 background: overlay.background,
@@ -1078,7 +959,11 @@ fn validate_watermark(
                 return Err("ウォーターマークの位置が動画サイズを超えています。".to_string());
             }
             Ok(ValidatedWatermark {
-                image_path: validate_input(&watermark.image_path, "ウォーターマーク")?,
+                image_path: media_security::validate_input(
+                    &watermark.image_path,
+                    InputKind::Image,
+                    "ウォーターマーク",
+                )?,
                 scale: watermark.scale,
                 position: watermark.position,
                 x: watermark.x,
@@ -1092,24 +977,24 @@ fn validate_watermark(
         .transpose()
 }
 
-fn add_overlay_input(command: &mut Command, overlay: Option<&ValidatedOverlay>) {
+fn add_overlay_input(
+    command: &mut Command,
+    overlay: Option<&ValidatedOverlay>,
+) -> Result<(), String> {
     if let Some(overlay) = overlay {
-        command
-            .arg("-loop")
-            .arg("1")
-            .arg("-i")
-            .arg(&overlay.image_path);
+        media_security::add_input(command, &overlay.image_path, true)?;
     }
+    Ok(())
 }
 
-fn add_watermark_input(command: &mut Command, watermark: Option<&ValidatedWatermark>) {
+fn add_watermark_input(
+    command: &mut Command,
+    watermark: Option<&ValidatedWatermark>,
+) -> Result<(), String> {
     if let Some(watermark) = watermark {
-        command
-            .arg("-loop")
-            .arg("1")
-            .arg("-i")
-            .arg(&watermark.image_path);
+        media_security::add_input(command, &watermark.image_path, true)?;
     }
+    Ok(())
 }
 
 fn add_video_filter_and_mapping(
@@ -1261,76 +1146,6 @@ fn watermark_label(watermark: Option<&ValidatedWatermark>) -> String {
         })
         .unwrap_or_else(|| "no-watermark".to_string())
 }
-fn validate_input(value: &str, label: &str) -> Result<PathBuf, String> {
-    let path = PathBuf::from(value);
-    if !path.is_file() {
-        return Err(format!(
-            "{label}ファイルが見つかりません: {}",
-            path.display()
-        ));
-    }
-    fs::canonicalize(&path).map_err(|error| format!("{label}ファイルを読み取れません: {error}"))
-}
-
-fn validate_output(value: &str, audio: &Path, image: &Path) -> Result<PathBuf, String> {
-    let mut path = PathBuf::from(value);
-    if path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .map(|extension| extension.eq_ignore_ascii_case("mp4"))
-        != Some(true)
-    {
-        path.set_extension("mp4");
-    }
-    if path.as_os_str().is_empty() {
-        return Err("保存先を選択してください。".to_string());
-    }
-    let absolute = if path.is_absolute() {
-        path
-    } else {
-        std::env::current_dir()
-            .map_err(|error| format!("保存先を解決できません: {error}"))?
-            .join(path)
-    };
-    if absolute == audio || absolute == image {
-        return Err("入力ファイルと同じ場所には保存できません。".to_string());
-    }
-    Ok(absolute)
-}
-
-fn validate_trim_output(value: &str, input: &Path) -> Result<PathBuf, String> {
-    let mut path = PathBuf::from(value);
-    if path.as_os_str().is_empty() {
-        return Err("保存先を選択してください。".to_string());
-    }
-    if path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .map(|extension| extension.eq_ignore_ascii_case("mp4"))
-        != Some(true)
-    {
-        path.set_extension("mp4");
-    }
-    let absolute = if path.is_absolute() {
-        path
-    } else {
-        std::env::current_dir()
-            .map_err(|error| format!("保存先を解決できません: {error}"))?
-            .join(path)
-    };
-    let same_file = if absolute.exists() {
-        fs::canonicalize(&absolute).ok().as_deref() == fs::canonicalize(input).ok().as_deref()
-    } else {
-        absolute
-            .to_string_lossy()
-            .eq_ignore_ascii_case(&input.to_string_lossy())
-    };
-    if same_file {
-        return Err("元の動画とは別のファイル名で保存してください。".to_string());
-    }
-    Ok(absolute)
-}
-
 fn parse_duration_seconds(details: &str) -> Option<f64> {
     let pattern = Regex::new(r"Duration: (\d{2}):(\d{2}):(\d{2}(?:\.\d+)?)").ok()?;
     let captures = pattern.captures(details)?;
@@ -1378,6 +1193,7 @@ fn emit_progress(app: &AppHandle, percent: u8, message: &str) {
     );
 }
 
+#[cfg(test)]
 fn compact_error(details: &str) -> String {
     let useful = details
         .lines()

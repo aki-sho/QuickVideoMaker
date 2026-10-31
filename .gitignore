@@ -1,5 +1,6 @@
 # Dependencies and frontend output
 node_modules/
+.tools/
 dist-web/
 
 # Rust and release output
@@ -19,3 +20,44 @@ QuickVideoMaker-PortableData/
 *.log
 Thumbs.db
 .DS_Store
+# Local release archives and transient outputs
+/release-history/
+/.github-sync*/
+/github-sync-distribution/
+/src-tauri/target-*/
+
+# Local credentials, environments and generated output
+/.agents/
+/.codex/
+/node_modules/
+/dist/
+/dist-web/
+/dist-unsigned/
+/dist-portable/
+/build/
+/.cache/
+/.tmp/
+/.release-test/
+/.release-stage/
+/.release-staging/
+/.venv/
+/.verify-venv/
+/.runtime/
+/.source-backup/
+/outputs/
+/src-tauri/target/
+/artifacts/
+/.dotnet/
+/.nuget/
+/.signing/
+**/__pycache__/
+*.pyc
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.pfx
+*.p12
+.env
+.env.*
+!.env.example

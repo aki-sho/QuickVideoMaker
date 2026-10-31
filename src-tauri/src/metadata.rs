@@ -1,4 +1,4 @@
-use crate::portable::PortablePaths;
+use crate::{media_security, portable::PortablePaths, subprocess};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -70,8 +70,8 @@ pub fn inspect(
     details: &str,
     width: u32,
     height: u32,
-) -> VideoMetadata {
-    let tags = read_global_tags(paths, input);
+) -> Result<VideoMetadata, String> {
+    let tags = read_global_tags(paths, input)?;
     let video_line = stream_line(details, "Video:").unwrap_or_default();
     let audio_line = stream_line(details, "Audio:").unwrap_or_default();
     let (color_space, color_primaries, transfer_characteristics) = color_information(video_line);
@@ -89,7 +89,7 @@ pub fn inspect(
     let encoder_versions = parse_encoder_versions(details);
 
     let editable = editable_from_tags(&tags, details, &encoder_versions);
-    VideoMetadata {
+    Ok(VideoMetadata {
         technical: TechnicalMetadata {
             frame_rate: parse_frame_rate(video_line).unwrap_or_default(),
             resolution: format!("{width} × {height}"),
@@ -103,7 +103,7 @@ pub fn inspect(
             encoder_version: encoder_versions,
         },
         editable,
-    }
+    })
 }
 
 pub fn apply_to_command(command: &mut Command, metadata: &EditableMetadata) -> Result<(), String> {
@@ -228,16 +228,14 @@ fn parse_custom_metadata(value: &str) -> Result<Vec<(String, String)>, String> {
     Ok(parsed)
 }
 
-fn read_global_tags(paths: &PortablePaths, input: &Path) -> BTreeMap<String, String> {
-    let ffmpeg = match paths.ffmpeg_path() {
-        Ok(path) => path,
-        Err(_) => return BTreeMap::new(),
-    };
-    let mut command = Command::new(ffmpeg);
+fn read_global_tags(
+    paths: &PortablePaths,
+    input: &Path,
+) -> Result<BTreeMap<String, String>, String> {
+    let ffmpeg = paths.ffmpeg_path()?;
+    let mut command = media_security::ffmpeg_command(ffmpeg);
+    media_security::add_input(&mut command, input, false)?;
     command
-        .arg("-hide_banner")
-        .arg("-i")
-        .arg(input)
         .arg("-f")
         .arg("ffmetadata")
         .arg("-")
@@ -245,11 +243,18 @@ fn read_global_tags(paths: &PortablePaths, input: &Path) -> BTreeMap<String, Str
         .stderr(Stdio::null())
         .stdin(Stdio::null());
     hide_console_window(&mut command);
-    let output = match command.output() {
-        Ok(output) if output.status.success() => output,
-        _ => return BTreeMap::new(),
-    };
-    parse_ffmetadata(&String::from_utf8_lossy(&output.stdout))
+    let output = subprocess::capture(
+        command,
+        subprocess::ANALYSIS_TIMEOUT,
+        subprocess::MAX_CAPTURE,
+        None,
+    )?;
+    if !output.status.success() {
+        return Err(
+            "メタデータを解析できません。入力形式とファイルの破損を確認してください。".to_string(),
+        );
+    }
+    Ok(parse_ffmetadata(&String::from_utf8_lossy(&output.stdout)))
 }
 
 fn parse_ffmetadata(value: &str) -> BTreeMap<String, String> {

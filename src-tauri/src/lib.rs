@@ -1,15 +1,30 @@
 mod c2pa_metadata;
 mod dialogs;
+mod media_security;
 mod metadata;
 mod portable;
 mod preview;
+mod safe_output;
 mod state;
+mod subprocess;
 mod video;
 
 use state::{AppState, ProcessControl};
 use std::sync::Arc;
 use std::{path::PathBuf, sync::Mutex};
 use tauri::Manager;
+
+/// A worker invocation exits before portable-data cleanup or single-instance setup.
+pub fn run_analysis_worker() -> bool {
+    c2pa_metadata::run_worker()
+}
+
+#[cfg(test)]
+fn security_test_dir() -> tempfile::TempDir {
+    let parent = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/security-tests");
+    std::fs::create_dir_all(&parent).unwrap();
+    tempfile::tempdir_in(parent).unwrap()
+}
 
 #[tauri::command]
 async fn create_video(
@@ -37,10 +52,15 @@ async fn import_video(
     let paths = state.paths.clone();
     let preview = state.preview.clone();
     let source_video = state.source_video.clone();
-    let result =
-        tauri::async_runtime::spawn_blocking(move || video::inspect_video(&paths, &video_path))
-            .await
-            .map_err(|error| format!("動画情報の取得タスクが停止しました: {error}"))??;
+    let inspection = state.inspection.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let _guard = inspection
+            .try_lock()
+            .map_err(|_| "別の解析処理を実行中です。".to_string())?;
+        video::inspect_video(&paths, &video_path)
+    })
+    .await
+    .map_err(|error| format!("動画情報の取得タスクが停止しました: {error}"))??;
     set_source_and_preview(&source_video, &preview, &result.output_path)?;
     Ok(result)
 }
@@ -102,9 +122,32 @@ struct ImagePreviewData {
 }
 
 #[tauri::command]
-fn load_image_preview(image_path: String) -> Result<ImagePreviewData, String> {
-    let path = PathBuf::from(&image_path);
-    let metadata = std::fs::metadata(&path)
+async fn load_image_preview(
+    state: tauri::State<'_, AppState>,
+    image_path: String,
+) -> Result<ImagePreviewData, String> {
+    let paths = state.paths.clone();
+    let inspection = state.inspection.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = inspection
+            .try_lock()
+            .map_err(|_| "別の解析処理を実行中です。".to_string())?;
+        read_image_preview(&paths, &image_path)
+    })
+    .await
+    .map_err(|e| format!("画像解析タスクが停止しました: {e}"))?
+}
+
+fn read_image_preview(
+    paths: &portable::PortablePaths,
+    image_path: &str,
+) -> Result<ImagePreviewData, String> {
+    use std::io::{Read, Write};
+    let path =
+        media_security::validate_input(image_path, media_security::InputKind::Image, "画像")?;
+    let file = std::fs::File::open(&path).map_err(|e| format!("画像を読み込めません: {e}"))?;
+    let metadata = file
+        .metadata()
         .map_err(|error| format!("画像プレビューを読み込めません: {error}"))?;
     if !metadata.is_file() || metadata.len() > 32 * 1024 * 1024 {
         return Err("画像プレビューは32MB以下の画像ファイルを選択してください。".to_string());
@@ -123,8 +166,38 @@ fn load_image_preview(image_path: String) -> Result<ImagePreviewData, String> {
         "tif" | "tiff" => "image/tiff",
         _ => return Err("対応していない画像形式です。".to_string()),
     };
-    let bytes =
-        std::fs::read(path).map_err(|error| format!("画像プレビューを読み込めません: {error}"))?;
+    let mut bytes = Vec::new();
+    file.take(32 * 1024 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("画像プレビューを読み込めません: {error}"))?;
+    if bytes.len() > 32 * 1024 * 1024 {
+        return Err("画像プレビューは32MB以下にしてください。".to_string());
+    }
+    // Decode the exact bytes returned to WebView, even if the source changes.
+    let suffix = format!(".{extension}");
+    let mut snapshot = tempfile::Builder::new()
+        .prefix("image-preview-")
+        .suffix(&suffix)
+        .tempfile_in(&paths.temp)
+        .map_err(|e| format!("画像を検査できません: {e}"))?;
+    snapshot
+        .write_all(&bytes)
+        .map_err(|e| format!("画像を検査できません: {e}"))?;
+    snapshot
+        .flush()
+        .map_err(|e| format!("画像を検査できません: {e}"))?;
+    let mut command = media_security::ffmpeg_command(paths.ffmpeg_path()?);
+    media_security::add_input(&mut command, snapshot.path(), false)?;
+    command.args(["-frames:v", "1", "-f", "null", "-"]);
+    let output = subprocess::capture(
+        command,
+        subprocess::ANALYSIS_TIMEOUT,
+        subprocess::MAX_CAPTURE,
+        None,
+    )?;
+    if !output.status.success() {
+        return Err("画像を解析できません。形式・解像度・破損を確認してください。".to_string());
+    }
     Ok(ImagePreviewData {
         bytes,
         mime_type: mime_type.to_string(),
@@ -141,9 +214,15 @@ async fn inspect_c2pa(
         .map_err(|_| "元動画の状態を取得できません".to_string())?
         .clone()
         .ok_or_else(|| "先に動画を作成またはインポートしてください。".to_string())?;
-    tauri::async_runtime::spawn_blocking(move || c2pa_metadata::inspect(&input))
-        .await
-        .map_err(|error| format!("証明情報の検証タスクが停止しました: {error}"))
+    let inspection = state.inspection.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = inspection
+            .try_lock()
+            .map_err(|_| "別の解析処理を実行中です。".to_string())?;
+        c2pa_metadata::inspect_isolated(&input)
+    })
+    .await
+    .map_err(|error| format!("証明情報の検証タスクが停止しました: {error}"))?
 }
 
 fn set_preview(preview: &preview::PreviewStore, path: &str) -> Result<(), String> {
@@ -186,6 +265,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             process: process.clone(),
             source_video,
             preview,
+            inspection: Arc::new(Mutex::new(())),
         })
         .invoke_handler(tauri::generate_handler![
             dialogs::select_music_file,

@@ -1,6 +1,6 @@
 [package]
 name = "quick-video-maker"
-version = "0.0.0"
+version = "1.7.1"
 description = "QuickVideoMaker desktop application"
 authors = ["QuickVideoMaker contributors"]
 edition = "2021"
@@ -16,6 +16,8 @@ path = "src/main.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+sha2 = "0.10"
+serde_json = "1"
 
 [dependencies]
 c2pa = { version = "0.90.16", default-features = false, features = ["file_io", "rust_native_crypto"] }
@@ -24,5 +26,10 @@ rfd = "0.15"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
+same-file = "1"
+tempfile = "3"
 tauri = { version = "2", features = [] }
 tauri-plugin-single-instance = "2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_Storage_FileSystem"] }

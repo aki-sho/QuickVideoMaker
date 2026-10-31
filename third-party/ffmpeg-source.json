@@ -1,0 +1,9 @@
+{
+  "version": "9.0.2",
+  "upstreamCommit": "946fcce07b",
+  "sourceArchive": "https://github.com/FFmpeg/FFmpeg/archive/946fcce07b.zip",
+  "sourceArchiveSha256": "8cffa6ccf78df6d39d57bd61baaf19e8bf0a7d590eef0d838de69932e8de3572",
+  "sourceAndBuildInfo": "https://github.com/aki-sho/QuickVideoMaker/releases/download/v1.7.1/FFmpeg-9.0.2-source-and-build-info.zip",
+  "bundleSha256": "2b64451e4ebe718f4978925815d4c2cfc22f366008f958c6c1f47a05fcd5d3e1",
+  "binaryProvider": "https://github.com/GyanD/codexffmpeg/releases/tag/9.0.2"
+}

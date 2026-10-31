@@ -1,5 +1,5 @@
 use c2pa::{Error, Reader, ValidationState};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{collections::BTreeSet, path::Path};
 
@@ -7,7 +7,7 @@ const MAX_ITEMS: usize = 20;
 const MAX_ITEM_CHARS: usize = 320;
 const MAX_TOTAL_CHARS: usize = 4_000;
 
-#[derive(Clone, Default, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Default, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct C2paDetails {
     pub validation_result: String,
@@ -41,6 +41,71 @@ impl C2paDetails {
             ..Self::default()
         }
     }
+}
+
+pub fn inspect_isolated(path: &Path) -> Result<C2paDetails, String> {
+    let path = crate::media_security::validate_input(
+        &path.to_string_lossy(),
+        crate::media_security::InputKind::Video,
+        "動画",
+    )?;
+    let mut command =
+        std::process::Command::new(std::env::current_exe().map_err(|e| e.to_string())?);
+    command.arg("--qvm-c2pa-worker");
+    let input = serde_json::to_vec(&path.to_string_lossy()).map_err(|e| e.to_string())?;
+    if input.len() > 65_536 {
+        return Err("ファイルのパスが長すぎます。".to_string());
+    }
+    let output = crate::subprocess::capture(
+        command,
+        crate::subprocess::ANALYSIS_TIMEOUT,
+        128 * 1024,
+        Some(&input),
+    )?;
+    if !output.status.success() {
+        return Err(
+            "証明情報の解析が停止しました。ファイルの破損またはメモリ上限を確認してください。"
+                .to_string(),
+        );
+    }
+    serde_json::from_slice(&output.stdout)
+        .map_err(|e| format!("証明情報の解析結果を読み取れません: {e}"))
+}
+
+pub fn run_worker() -> bool {
+    use std::io::{Read, Write};
+    if std::env::args_os().nth(1).as_deref() != Some(std::ffi::OsStr::new("--qvm-c2pa-worker")) {
+        return false;
+    }
+    let result = (|| -> Result<(), String> {
+        let mut input = Vec::new();
+        std::io::stdin()
+            .take(65_537)
+            .read_to_end(&mut input)
+            .map_err(|e| e.to_string())?;
+        if input.len() > 65_536 {
+            return Err("Worker input exceeds limit".to_string());
+        }
+        let path: String = serde_json::from_slice(&input).map_err(|e| e.to_string())?;
+        let path = crate::media_security::validate_input(
+            &path,
+            crate::media_security::InputKind::Video,
+            "動画",
+        )?;
+        let details = inspect(&path);
+        let output = serde_json::to_vec(&details).map_err(|e| e.to_string())?;
+        if output.len() > 128 * 1024 {
+            return Err("Worker output exceeds limit".to_string());
+        }
+        std::io::stdout()
+            .write_all(&output)
+            .map_err(|e| e.to_string())
+    })();
+    if let Err(error) = result {
+        eprintln!("C2PA worker: {error}");
+        std::process::exit(1);
+    }
+    true
 }
 
 pub fn inspect(path: &Path) -> C2paDetails {

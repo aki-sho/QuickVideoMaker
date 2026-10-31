@@ -4,9 +4,11 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
+    sync::LazyLock,
 };
 
-const FFMPEG_BYTES: &[u8] = include_bytes!("../../node_modules/ffmpeg-static/ffmpeg.exe");
+const FFMPEG_BYTES: &[u8] = include_bytes!("../../.tools/ffmpeg/ffmpeg.exe");
+static EMBEDDED_HASH: LazyLock<[u8; 32]> = LazyLock::new(|| Sha256::digest(FFMPEG_BYTES).into());
 
 #[derive(Clone)]
 pub struct PortablePaths {
@@ -82,9 +84,8 @@ impl PortablePaths {
             .map_err(|error| format!("FFmpeg用フォルダーを作成できません: {error}"))?;
         let destination = tool_dir.join("ffmpeg.exe");
 
-        let embedded_hash = Sha256::digest(FFMPEG_BYTES);
         let installed_matches = hash_file(&destination)
-            .map(|hash| hash.as_slice() == embedded_hash.as_slice())
+            .map(|hash| hash.as_slice() == EMBEDDED_HASH.as_slice())
             .unwrap_or(false);
 
         if !installed_matches {

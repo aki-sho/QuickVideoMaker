@@ -1,0 +1,44 @@
+name: GitHub sync verification
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify-and-package:
+    runs-on: windows-latest
+    timeout-minutes: 75
+    env:
+      CARGO_BUILD_JOBS: 2
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: rustup default stable
+      - name: Verify and package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & 'npm.cmd' 'run' 'check'
+          if ($LASTEXITCODE -ne 0) { throw 'Verification or packaging step failed' }
+          & 'npm.cmd' 'test'
+          if ($LASTEXITCODE -ne 0) { throw 'Verification or packaging step failed' }
+          & 'npm.cmd' 'run' 'release:portable'
+          if ($LASTEXITCODE -ne 0) { throw 'Verification or packaging step failed' }
+          $out = 'github-sync-distribution'
+          New-Item -ItemType Directory -Path $out -Force | Out-Null
+          foreach ($dir in @('dist','dist-unsigned')) { if (Test-Path -LiteralPath $dir) { Get-ChildItem -LiteralPath $dir -File | Where-Object { $_.Name -match '\.(exe|zip|sha256|cer|txt)$' } | Copy-Item -Destination $out } }
+          $binaries = @(Get-ChildItem -LiteralPath $out -File | Where-Object { $_.Extension -in @('.exe','.zip') })
+          if ($binaries.Count -eq 0) { throw 'No distribution binaries were produced' }
+          foreach ($file in $binaries) { $hash=(Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant(); [IO.File]::WriteAllText(($file.FullName+'.sha256'), $hash+'  '+$file.Name+[Environment]::NewLine, [Text.Encoding]::ASCII) }
+          $items = @(Get-ChildItem -LiteralPath $out -File | ForEach-Object { @{name=$_.Name;size=$_.Length;sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()} })
+          @{app='QuickVideoMaker';version='1.7.1';commit=$env:GITHUB_SHA;repository=$env:GITHUB_REPOSITORY;run=$env:GITHUB_RUN_ID;files=$items} | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $out 'release-build.json') -Encoding utf8
+      - name: Upload verified distribution
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: github-sync-distribution
+          path: github-sync-distribution/
+          if-no-files-found: error
+          retention-days: 14
